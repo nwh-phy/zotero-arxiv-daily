@@ -1,4 +1,4 @@
-"""Live verification; SMTP login is optional, and this script never sends email."""
+"""Live verification; sending a labelled test email requires --send-test."""
 import json
 import argparse
 import os
@@ -19,9 +19,11 @@ from zotero_arxiv_daily.construct_email import render_email
 from zotero_arxiv_daily.protocol import Paper
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _entry_to_arxiv_result
 from zotero_arxiv_daily.reranker.local import LocalReranker
+from zotero_arxiv_daily.utils import send_email
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--summary-only', action='store_true')
+parser.add_argument('--send-test', action='store_true')
 args = parser.parse_args()
 
 with initialize_config_dir(config_dir=str(Path('config').resolve()), version_base=None):
@@ -168,7 +170,16 @@ else:
             server.quit()
         return {'authenticated': True, 'email_sent': False}
     check('smtp', smtp_check)
-results['end_to_end_email'] = {'status': 'NOT_RUN', 'reason': 'Verification script does not send; use daily workflow after SMTP setup'}
+if args.send_test and not failed and results.get('smtp', {}).get('status') == 'PASS' and results.get('chinese_summary_and_html', {}).get('status') == 'PASS':
+    def send_test_check():
+        banner = '<p><strong>部署测试邮件</strong>：此邮件用于验证 Gmail 投递与中文简报显示。</p>'
+        if candidate_origin != 'current RSS':
+            banner += '<p>以下为真实历史 arXiv 样本，仅用于部署测试，不代表今日推荐。</p>'
+        send_email(config, banner + (out/'sample.html').read_text(), subject='[部署测试] Zotero arXiv 中文文献简报')
+        return {'smtp_accepted': True, 'inbox_confirmed': False, 'candidate_origin': candidate_origin}
+    check('end_to_end_email', send_test_check)
+else:
+    results['end_to_end_email'] = {'status': 'NOT_RUN', 'reason': 'Test sending not requested or prerequisites did not pass'}
 (out/'results.json').write_text(json.dumps(results, ensure_ascii=False, indent=2))
 summary = '\n'.join(f"- {name}: {r['status']}" for name,r in results.items())
 if step_summary := os.environ.get('GITHUB_STEP_SUMMARY'):

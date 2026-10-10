@@ -139,7 +139,7 @@ def glob_match(path:str, pattern:str) -> bool:
     re_pattern = glob.translate(pattern,recursive=True)
     return re.match(re_pattern, path) is not None
 
-def send_email(config:DictConfig, html:str):
+def send_email(config:DictConfig, html:str, subject:str | None = None):
     sender = config.email.sender
     receiver = config.email.receiver
     password = config.email.sender_password
@@ -155,7 +155,7 @@ def send_email(config:DictConfig, html:str):
     from zoneinfo import ZoneInfo
     import ssl
     today = datetime.datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y/%m/%d')
-    msg['Subject'] = Header(f'科研文献简报 {today}', 'utf-8').encode()
+    msg['Subject'] = Header(subject or f'科研文献简报 {today}', 'utf-8').encode()
 
     try:
         server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)

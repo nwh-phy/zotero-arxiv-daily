@@ -6,6 +6,10 @@ on:
         description: Retest summaries without repeating the unchanged CPU ranking
         type: boolean
         default: false
+      send_test:
+        description: Send one explicitly labelled deployment test email after verification passes
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -55,7 +59,7 @@ jobs:
           path: /home/runner/.cache/huggingface
           key: hf-jina-v5-nano-${{ runner.os }}-${{ hashFiles('uv.lock') }}
       - name: Live API, embedding and Chinese summary verification
-        run: uv run --frozen scripts/verify_deployment.py ${{ inputs.summary_only && '--summary-only' || '' }}
+        run: uv run --frozen scripts/verify_deployment.py ${{ inputs.summary_only && '--summary-only' || '' }} ${{ inputs.send_test && '--send-test' || '' }}
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v4
