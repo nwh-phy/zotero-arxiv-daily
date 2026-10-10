@@ -22,7 +22,7 @@ llm:
     base_url: ${oc.env:OPENAI_API_BASE}
   api_mode: response
   generation_kwargs:
-    model: global:kimi-k3
+    model: kimi-k3-1
     max_tokens: 4096
     reasoning:
       effort: low
