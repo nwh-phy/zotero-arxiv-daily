@@ -17,3 +17,6 @@ models
 test-compose.yml
 outputs
 config/private.yaml
+# Deployment evidence and successful delivery markers
+verification/
+.delivery/

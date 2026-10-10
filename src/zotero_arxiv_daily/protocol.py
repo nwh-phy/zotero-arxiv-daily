@@ -48,10 +48,13 @@ class Paper:
     tldr: Optional[str] = None
     affiliations: Optional[list[str]] = None
     score: Optional[float] = None
+    published: Optional[str] = None
+    journal_ref: Optional[str] = None
 
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')
-        prompt = f"Given the following information of a paper, generate a one-sentence TLDR summary in {lang}:\n\n"
+        instructions = llm_params.get('summary_instructions')
+        prompt = f"Given the following information of a paper, generate a summary in {lang}:\n\n"
         if self.title:
             prompt += f"Title:\n {self.title}\n\n"
 
@@ -77,7 +80,7 @@ class Paper:
             [
                 {
                     "role": "system",
-                    "content": f"You are an assistant who perfectly summarizes scientific paper, and gives the core idea of the paper to the user. Your answer should be in {lang}.",
+                    "content": instructions or f"Summarize the core idea in one sentence in {lang}. Use only the supplied evidence.",
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -90,7 +93,9 @@ class Paper:
             self.tldr = tldr
             return tldr
         except Exception as e:
-            logger.warning(f"Failed to generate tldr of {self.url}: {e}")
+            logger.warning(f"Summary request failed for {self.url} ({type(e).__name__})")
+            if llm_params.get('strict_summary', False):
+                raise RuntimeError("Chinese summary generation failed; email was not sent.") from None
             tldr = self.abstract
             self.tldr = tldr
             return tldr

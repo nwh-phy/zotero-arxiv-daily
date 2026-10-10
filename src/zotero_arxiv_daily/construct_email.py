@@ -1,5 +1,8 @@
 from .protocol import Paper
 import math
+from html import escape
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 framework = """
@@ -52,7 +55,7 @@ def get_empty_html():
   """
   return block_template
 
-def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affiliations:str=None):
+def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affiliations:str=None, url:str=None, publication:str=None):
     block_template = """
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #ddd; border-radius: 8px; padding: 16px; background-color: #f9f9f9;">
     <tr>
@@ -65,27 +68,34 @@ def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affi
             {authors}
             <br>
             <i>{affiliations}</i>
+            <br>{publication}
         </td>
     </tr>
     <tr>
         <td style="font-size: 14px; color: #333; padding: 8px 0;">
-            <strong>Relevance:</strong> {rate}
+            <strong>相关度：</strong> {rate}
         </td>
     </tr>
     <tr>
         <td style="font-size: 14px; color: #333; padding: 8px 0;">
-            <strong>TLDR:</strong> {tldr}
+            <strong>中文总结：</strong> {tldr}
         </td>
     </tr>
 
     <tr>
         <td style="padding: 8px 0;">
+            <a href="{url}">arXiv 原文</a>
             <a href="{pdf_url}" style="display: inline-block; text-decoration: none; font-size: 14px; font-weight: bold; color: #fff; background-color: #d9534f; padding: 8px 16px; border-radius: 4px;">PDF</a>
         </td>
     </tr>
 </table>
 """
-    return block_template.format(title=title, authors=authors,rate=rate, tldr=tldr, pdf_url=pdf_url, affiliations=affiliations)
+    def safe_url(value):
+        return escape(value, quote=True) if value and value.startswith(('https://', 'http://')) else '#'
+    return block_template.format(title=escape(title), authors=escape(authors), rate=rate,
+                                 tldr=escape(tldr or '').replace('\n', '<br>'),
+                                 pdf_url=safe_url(pdf_url), url=safe_url(url),
+                                 affiliations=escape(affiliations or ''), publication=escape(publication or ''))
 
 def get_stars(score:float):
     full_star = '<span class="full-star">⭐</span>'
@@ -125,7 +135,10 @@ def render_email(papers:list[Paper]) -> str:
                 affiliations += ', ...'
         else:
             affiliations = 'Unknown Affiliation'
-        parts.append(get_block_html(p.title, authors, rate, p.tldr, p.pdf_url, affiliations))
+        publication = f"arXiv 发布：{p.published or '未提供'}；期刊：{p.journal_ref or '未提供（预印本）'}"
+        parts.append(get_block_html(p.title, authors, rate, p.tldr, p.pdf_url, affiliations, p.url, publication))
 
-    content = '<br>' + '</br><br>'.join(parts) + '</br>'
+    today = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d')
+    content = f'<h1>科研文献简报 · {today}（北京时间）</h1><p>推荐 {len(papers)} 篇，按相关度排序。</p>'
+    content += '<br>' + '<br><br>'.join(parts)
     return framework.replace('__CONTENT__', content)

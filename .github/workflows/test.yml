@@ -1,34 +1,61 @@
 name: Test
 on:
   workflow_dispatch:
-
+permissions:
+  contents: read
+concurrency:
+  group: literature-verification
+  cancel-in-progress: false
 jobs:
-  calculate-and-send:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      TZ: Asia/Shanghai
+      HF_HOME: /home/runner/.cache/huggingface
+      CUDA_VISIBLE_DEVICES: ''
+      ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+      ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+      SENDER: ${{ secrets.SENDER }}
+      RECEIVER: ${{ secrets.RECEIVER }}
+      SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+      SMTP_SERVER: ${{ vars.SMTP_SERVER }}
+      SMTP_PORT: ${{ vars.SMTP_PORT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      #  with:
-      #    repository: ${{ vars.REPOSITORY }}
-      #    ref: ${{ vars.REF }}
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7.1.4
-
-
-      - name: Run script
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: main
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Apply non-sensitive configuration override
         env:
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          SENDER: ${{ secrets.SENDER }}
-          RECEIVER: ${{ secrets.RECEIVER }}
-          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
         run: |
-          export DEBUG=true
-          printf "%b\n" "$CUSTOM_CONFIG" > config/custom.yaml
-          echo "Use custom config: "
-          cat config/custom.yaml
-          uv run src/zotero_arxiv_daily/main.py
+          if [ -n "$CUSTOM_CONFIG" ]; then
+            printf '%s\n' "$CUSTOM_CONFIG" > config/custom.yaml
+          fi
+      - name: YAML syntax and Python compilation
+        run: |
+          uv run --frozen python scripts/preflight.py --syntax-only
+          uv run --frozen python -m compileall -q src scripts
+      - name: Native regression tests
+        run: uv run --frozen --group dev pytest -q
+      - name: Cache Hugging Face model
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-jina-v5-nano-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+      - name: Live API, embedding and Chinese summary verification
+        run: uv run --frozen scripts/verify_deployment.py
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-report
+          path: verification/
+          if-no-files-found: ignore
+          retention-days: 14

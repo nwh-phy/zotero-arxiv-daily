@@ -154,36 +154,20 @@ def test_send_email_falls_back_to_ssl(config, monkeypatch):
     assert len(sent) == 1
 
 
-def test_send_email_falls_back_to_plain(config, monkeypatch):
-    sent = []
-    call_count = {"smtp": 0}
-
-    StubOK = make_stub_smtp(sent)
-
-    class StubSMTP_TLS_Fails:
+def test_send_email_rejects_plaintext(config, monkeypatch):
+    calls = []
+    class NoTLS:
         def __init__(self, *a, **kw):
-            call_count["smtp"] += 1
-            if call_count["smtp"] == 1:
-                pass  # first SMTP() call succeeds, but starttls will fail
-            else:
-                pass  # third SMTP() call is the plain fallback
+            calls.append('SMTP')
         def starttls(self):
-            raise OSError("TLS not supported")
-        def login(self, u, p):
-            pass
-        def sendmail(self, s, r, m):
-            sent.append((s, r, m))
-        def quit(self):
-            pass
-
-    class StubSMTP_SSL_Fails:
-        def __init__(self, *a, **kw):
-            raise OSError("SSL not supported")
-
-    monkeypatch.setattr(smtplib, "SMTP", StubSMTP_TLS_Fails)
-    monkeypatch.setattr(smtplib, "SMTP_SSL", StubSMTP_SSL_Fails)
-    send_email(config, "<html>plain</html>")
-    assert len(sent) == 1
+            raise OSError('TLS unavailable')
+    def no_ssl(*args, **kwargs):
+        raise OSError('SSL unavailable')
+    monkeypatch.setattr(smtplib, 'SMTP', NoTLS)
+    monkeypatch.setattr(smtplib, 'SMTP_SSL', no_ssl)
+    with pytest.raises(OSError, match='SSL unavailable'):
+        send_email(config, '<html>secure only</html>')
+    assert calls == ['SMTP']
 
 
 # ---------------------------------------------------------------------------

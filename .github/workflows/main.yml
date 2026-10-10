@@ -2,33 +2,73 @@ name: Send emails daily
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 22 * * *'
-
+    - cron: '15 0 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: daily-literature-delivery
+  cancel-in-progress: false
 jobs:
   calculate-and-send:
+    if: vars.DELIVERY_ENABLED == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TZ: Asia/Shanghai
+      HF_HOME: /home/runner/.cache/huggingface
+      CUDA_VISIBLE_DEVICES: ''
+      ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+      ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+      SENDER: ${{ secrets.SENDER }}
+      RECEIVER: ${{ secrets.RECEIVER }}
+      SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+      SMTP_SERVER: ${{ vars.SMTP_SERVER }}
+      SMTP_PORT: ${{ vars.SMTP_PORT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
-          repository: ${{ vars.REPOSITORY }}
-          ref: ${{ vars.REF }}
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Run script
+          repository: ${{ github.repository }}
+          ref: main
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Apply non-sensitive configuration override
         env:
-          ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
-          ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
-          SENDER: ${{ secrets.SENDER }}
-          RECEIVER: ${{ secrets.RECEIVER }}
-          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
         run: |
-          printf "%b\n" "$CUSTOM_CONFIG" > config/custom.yaml
-          echo "Use custom config: "
-          cat config/custom.yaml
-          uv run src/zotero_arxiv_daily/main.py
+          if [ -n "$CUSTOM_CONFIG" ]; then
+            printf '%s\n' "$CUSTOM_CONFIG" > config/custom.yaml
+          fi
+      - name: Check required credentials
+        run: uv run --frozen scripts/preflight.py
+      - name: Beijing delivery date
+        id: date
+        run: echo "day=$(date +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore successful delivery marker
+        id: delivered
+        uses: actions/cache/restore@v4
+        with:
+          path: .delivery
+          key: literature-delivered-${{ github.repository_id }}-${{ steps.date.outputs.day }}
+      - name: Cache Hugging Face model
+        if: steps.delivered.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/huggingface
+          key: hf-jina-v5-nano-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+      - name: Generate and send brief
+        if: steps.delivered.outputs.cache-hit != 'true'
+        env:
+          DELIVERY_MARKER: .delivery/sent
+        run: uv run --frozen src/zotero_arxiv_daily/main.py
+      - name: Remember SMTP acceptance
+        if: steps.delivered.outputs.cache-hit != 'true' && hashFiles('.delivery/sent') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .delivery
+          key: literature-delivered-${{ github.repository_id }}-${{ steps.date.outputs.day }}
+      - name: Failure summary
+        if: failure()
+        run: echo 'Daily brief failed. Check the failed step; no credentials are printed. SMTP acceptance and cache persistence are separate operations.' >> "$GITHUB_STEP_SUMMARY"

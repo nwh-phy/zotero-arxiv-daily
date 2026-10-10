@@ -152,19 +152,17 @@ def send_email(config:DictConfig, html:str):
     msg = MIMEText(html, 'html', 'utf-8')
     msg['From'] = _format_addr('Github Action <%s>' % sender)
     msg['To'] = _format_addr('You <%s>' % receiver)
-    today = datetime.datetime.now().strftime('%Y/%m/%d')
-    msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
+    from zoneinfo import ZoneInfo
+    import ssl
+    today = datetime.datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y/%m/%d')
+    msg['Subject'] = Header(f'科研文献简报 {today}', 'utf-8').encode()
 
     try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
+        server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
         server.starttls()
     except Exception as e:
-        logger.debug(f"Failed to use TLS. {e}\nTry to use SSL.")
-        try:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        except Exception as e:
-            logger.debug(f"Failed to use SSL. {e}\nTry to use plain text.")
-            server = smtplib.SMTP(smtp_server, smtp_port)
+        logger.debug("STARTTLS unavailable; trying verified SMTP SSL.")
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30, context=ssl.create_default_context())
 
     server.login(sender, password)
     server.sendmail(sender, [receiver], msg.as_string())
