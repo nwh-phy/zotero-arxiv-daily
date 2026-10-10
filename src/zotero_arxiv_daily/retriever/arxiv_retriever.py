@@ -4,7 +4,7 @@ from arxiv import Result as ArxivResult
 from ..protocol import Paper
 from ..utils import extract_markdown_from_pdf, extract_tex_code_from_tar
 import calendar
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import multiprocessing
 import os
 from queue import Empty
@@ -127,6 +127,9 @@ def _clean_abstract(summary_raw: str) -> str:
 
 
 def _extract_authors(entry: Any) -> list[ArxivResult.Author]:
+    if getattr(entry, 'authors', None):
+        names = [a.get('name', '') if isinstance(a, dict) else getattr(a, 'name', '') for a in entry.authors]
+        return [ArxivResult.Author(name=name) for name in names if name]
     author_str = getattr(entry, "author", "") or ""
     if not author_str and hasattr(entry, "authors") and entry.authors:
         author_str = ", ".join(
@@ -217,6 +220,8 @@ class ArxivRetriever(BaseRetriever):
             raise ValueError("category must be specified for arxiv.")
 
     def _retrieve_raw_papers(self) -> list[ArxivResult]:
+        if self.config.source.arxiv.get('lookback_days', 0):
+            return self._retrieve_window_papers()
         query = '+'.join(self.config.source.arxiv.category)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
         rss_url = f"https://rss.arxiv.org/atom/{query}"
@@ -278,6 +283,66 @@ class ArxivRetriever(BaseRetriever):
             raw_papers.append(_entry_to_arxiv_result(entry))
 
         return raw_papers
+
+    def _retrieve_window_papers(self) -> list[ArxivResult]:
+        # Stable UTC midnight boundaries avoid gaps from scheduler minute delays.
+        end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=int(self.config.source.arxiv.lookback_days))
+        cats = list(self.config.source.arxiv.category)
+        query = '(' + ' OR '.join('cat:' + c for c in cats) + ') AND submittedDate:[' + start.strftime('%Y%m%d%H%M') + ' TO ' + (end-timedelta(minutes=1)).strftime('%Y%m%d%H%M') + ']'
+        papers, seen = [], set()
+        offset, page_size = 0, 500
+        while True:
+            for attempt in range(3):
+                try:
+                    response = requests.get('https://export.arxiv.org/api/query', params={
+                        'search_query': query, 'start': offset, 'max_results': page_size,
+                        'sortBy': 'submittedDate', 'sortOrder': 'descending'}, timeout=(10, 60))
+                    response.raise_for_status()
+                    feed = feedparser.parse(response.content)
+                    total = int(feed.feed.opensearch_totalresults)
+                    if feed.bozo and not feed.entries:
+                        raise ValueError('Invalid arXiv Atom response')
+                    if offset < total and not feed.entries:
+                        raise ValueError('Incomplete arXiv page')
+                    break
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    sleep(3)
+            for entry in feed.entries:
+                paper = _entry_to_arxiv_result(entry)
+                if not start <= paper.published < end:
+                    continue
+                if not self.config.source.arxiv.get('include_cross_list', False) and paper.primary_category not in cats:
+                    continue
+                key = paper.entry_id.rsplit('v', 1)[0]
+                if key not in seen:
+                    seen.add(key)
+                    papers.append(paper)
+            offset += len(feed.entries)
+            if offset >= total:
+                break
+            sleep(3)
+        self.window = {'start_utc': start.isoformat(), 'end_utc_exclusive': end.isoformat(), 'count': len(papers)}
+        logger.info(f'Weekly arXiv window: {self.window}')
+        return papers
+
+    def retrieve_papers(self) -> list[Paper]:
+        if not self.config.source.arxiv.get('lookback_days', 0):
+            return super().retrieve_papers()
+        # Rank abstracts first; download content only for the selected top papers.
+        raw = self._retrieve_raw_papers()
+        self._weekly_raw = {p.entry_id: p for p in raw}
+        return [Paper(source=self.name, title=p.title, authors=[a.name for a in p.authors],
+                      abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
+                      published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
+
+    def enrich_selected(self, paper: Paper) -> None:
+        raw = getattr(self, '_weekly_raw', {}).get(paper.url)
+        if raw is not None:
+            enriched = self.convert_to_paper(raw)
+            paper.full_text = enriched.full_text
 
     def convert_to_paper(self, raw_paper: ArxivResult) -> Paper:
         title = raw_paper.title

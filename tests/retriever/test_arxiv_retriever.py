@@ -252,3 +252,36 @@ def test_retrieve_raw_papers_retries_on_http_failure(config, mock_feedparser, mo
     assert len(calls) == 2
     assert len(raw) > 0
 
+
+
+def test_weekly_window_pages_deduplicates_and_ranks_metadata_only(config, monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from omegaconf import open_dict
+    with open_dict(config):
+        config.source.arxiv.lookback_days = 7
+        config.source.arxiv.include_cross_list = True
+    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    def entry(pid, age):
+        return SimpleNamespace(id='http://arxiv.org/abs/'+pid, title='Paper', summary='Abstract',
+                               published_parsed=(end-timedelta(days=age)).timetuple(),
+                               author='Last author', authors=[{'name':'First author'}, {'name':'Last author'}])
+    feeds = [SimpleNamespace(feed=SimpleNamespace(opensearch_totalresults='4'), bozo=False,
+                             entries=[entry('2601.00001v1', 1), entry('2601.00002v1', 2)]),
+             SimpleNamespace(feed=SimpleNamespace(opensearch_totalresults='4'), bozo=False,
+                             entries=[entry('2601.00001v1', 1), entry('2601.00003v1', 8)])]
+    calls=[]
+    def get(url, **kwargs):
+        calls.append(kwargs['params'])
+        return SimpleNamespace(content=b'feed', raise_for_status=lambda:None)
+    monkeypatch.setattr(arxiv_retriever.requests, 'get', get)
+    monkeypatch.setattr(arxiv_retriever.feedparser, 'parse', lambda _:feeds.pop(0))
+    monkeypatch.setattr(arxiv_retriever, 'sleep', lambda _:None)
+    retriever = ArxivRetriever(config)
+    monkeypatch.setattr(retriever, 'convert_to_paper', lambda _: (_ for _ in ()).throw(AssertionError('Full text before ranking')))
+    papers = retriever.retrieve_papers()
+    assert len(papers) == 2
+    assert all(p.full_text is None for p in papers)
+    assert papers[0].authors == ['First author', 'Last author']
+    assert [c['start'] for c in calls] == [0, 2]
+    assert 'submittedDate:[' in calls[0]['search_query']
+    assert retriever.window['count'] == 2

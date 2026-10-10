@@ -43,6 +43,7 @@ def _base_config():
                 "reranker.api.model=text-embedding-3-large",
                 "source.arxiv.category=[cs.AI,cs.CV]",
                 "source.arxiv.include_cross_list=false",
+                "source.arxiv.lookback_days=0",
                 "executor.source=[arxiv]",
                 "executor.reranker=api",
                 "executor.debug=false",
