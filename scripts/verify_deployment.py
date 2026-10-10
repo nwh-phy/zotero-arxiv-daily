@@ -4,7 +4,10 @@ import os
 from pathlib import Path
 import smtplib
 import ssl
-import arxiv
+import urllib.request
+import urllib.parse
+import time
+import feedparser
 
 import numpy as np
 from hydra import compose, initialize_config_dir
@@ -13,7 +16,7 @@ from omegaconf import OmegaConf
 from zotero_arxiv_daily.executor import Executor
 from zotero_arxiv_daily.construct_email import render_email
 from zotero_arxiv_daily.protocol import Paper
-from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever
+from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _entry_to_arxiv_result
 from zotero_arxiv_daily.reranker.local import LocalReranker
 
 with initialize_config_dir(config_dir=str(Path('config').resolve()), version_base=None):
@@ -73,8 +76,20 @@ if not papers:
     def historical_check():
         global papers, candidate_origin
         query = ' OR '.join('cat:' + c for c in config.source.arxiv.category)
-        search = arxiv.Search(query=query, max_results=10, sort_by=arxiv.SortCriterion.SubmittedDate)
-        raw = list(arxiv.Client(page_size=10, num_retries=2, delay_seconds=3).results(search))
+        url = 'https://export.arxiv.org/api/query?' + urllib.parse.urlencode({
+            'search_query': query, 'max_results': 10, 'sortBy': 'submittedDate', 'sortOrder': 'descending'})
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=30) as response:
+                    feed = feedparser.parse(response.read())
+                raw = [_entry_to_arxiv_result(entry) for entry in feed.entries]
+                if not raw:
+                    raise ValueError('No historical records returned')
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                time.sleep(3)
         papers = [Paper(source='arxiv', title=p.title, authors=[a.name for a in p.authors],
                         abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
                         published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
