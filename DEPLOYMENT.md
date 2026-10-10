@@ -28,3 +28,5 @@ No new papers means no email. A China-date cache marker is saved after SMTP acce
 Zotero access is read-only. Corpus filtering uses existing physics-oriented collection paths. No server, Docker or paid embedding resource is provisioned. The LLM reuses an existing OpenAI-compatible service; its availability and quota remain external dependencies.
 
 Weekly delivery: Monday 08:15 Asia/Shanghai (UTC cron `15 0 * * 1`). The arXiv API retrieves all pages for new submissions in the preceding seven complete UTC days, including matching cross-listed categories. Boundaries are UTC midnight (Beijing 08:00). Old-paper revisions are excluded. Abstracts are ranked with the existing algorithm; full-text extraction is attempted only for the top ten. A delayed API index may omit papers; this does not guarantee exhaustive coverage. Timeout is 180 minutes for the larger weekly CPU workload.
+
+Summary generation uses `global:kimi-k3` through the existing Responses service, with low reasoning effort and a 4096-token output budget. The summary itself remains 150–250 Chinese characters. Embedding and weekly ranking are unchanged.
