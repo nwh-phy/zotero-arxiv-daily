@@ -151,6 +151,8 @@ def _parse_entry_time(struct_time: Any) -> datetime:
 def _entry_to_arxiv_result(entry: Any) -> ArxivResult:
     raw_id = getattr(entry, "id", "") or ""
     paper_id = raw_id.removeprefix("oai:arXiv.org:")
+    # Atom IDs are absolute URLs; RSS IDs use the OAI prefix.
+    paper_id = re.sub(r"^https?://(?:export\.)?arxiv\.org/abs/", "", paper_id)
     title_raw = getattr(entry, "title", "") or ""
     title = " ".join(title_raw.split())
 

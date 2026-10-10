@@ -138,10 +138,12 @@ def summary_check():
     assert any('\u4e00' <= c <= '\u9fff' for c in summary)
     assert all(label in summary for label in ['问题', '方法', '结论', '创新', '参考价值'])
     assert '摘要确认' in summary
+    assert '全文片段确认' not in summary, 'Abstract-only sample claims full-text evidence'
     chinese_characters = sum('\u4e00' <= c <= '\u9fff' for c in summary)
     assert 150 <= chinese_characters <= 250, 'Summary length outside requested range'
     html = render_email([p])
     assert p.url in html and p.pdf_url in html
+    assert p.pdf_url.startswith('https://arxiv.org/pdf/') and '://' not in p.pdf_url.removeprefix('https://arxiv.org/pdf/')
     (out/'sample.html').write_text(html)
     (out/'sample.txt').write_text(p.title+'\n'+summary)
     return {'characters': len(summary), 'chinese_characters': chinese_characters, 'candidate_origin': candidate_origin,

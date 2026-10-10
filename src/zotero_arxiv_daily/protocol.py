@@ -60,6 +60,8 @@ class Paper:
 
         if self.abstract:
             prompt += f"Abstract: {self.abstract}\n\n"
+        if not self.full_text:
+            prompt += '证据范围：仅提供摘要，未提供全文。只能使用[摘要确认]，不得声称全文片段确认。\n\n'
 
         if self.full_text:
             prompt += f"Preview of main content:\n {self.full_text}\n\n"
@@ -94,7 +96,8 @@ class Paper:
                 count = sum('\u4e00' <= c <= '\u9fff' for c in text)
                 return (min_chars <= count <= max_chars
                         and all(label in text for label in ['问题', '方法', '结论', '创新', '参考价值'])
-                        and ('摘要确认' in text or '全文片段确认' in text))
+                        and ('摘要确认' in text or '全文片段确认' in text)
+                        and (bool(self.full_text) or '全文片段确认' not in text))
             if not acceptable(tldr):
                 # One bounded repair using the original evidence, never truncation.
                 tldr = _request_llm(openai_client, llm_params, [
@@ -103,7 +106,8 @@ class Paper:
                     {'role': 'assistant', 'content': tldr},
                     {'role': 'user', 'content':
                      f'请修正格式和篇幅：总计{min_chars}～{max_chars}个汉字，目标200字，证据标签计入字数。'
-                     '必须包含问题、方法、结论、创新、参考价值五项和证据标记。只依据原始论文文本，不得增加事实或机制。'},
+                     '必须包含问题、方法、结论、创新、参考价值五项和证据标记。只依据原始论文文本，不得增加事实或机制。'
+                     + ('未提供全文：删除全文片段确认，只能使用[摘要确认]。' if not self.full_text else '')},
                 ])
             if not tldr or not acceptable(tldr):
                 raise ValueError('Summary still violates the requested format or length')

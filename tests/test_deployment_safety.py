@@ -35,3 +35,26 @@ def test_noncompliant_summary_cannot_be_sent_after_bounded_repair():
         make_sample_paper().generate_tldr(client, params)
     assert len(calls) == 2
     assert make_sample_paper().title in calls[1]['messages'][1]['content']
+
+
+def test_abstract_only_summary_rejects_false_full_text_evidence():
+    calls = []
+    summary = '问题方法结论创新参考价值[摘要确认]全文片段确认' + '中' * 160
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=summary))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    params = {'strict_summary': True, 'summary_min_chars': 150, 'summary_max_chars': 250,
+              'summary_instructions': 'Use supplied evidence only.'}
+    paper = make_sample_paper(full_text=None)
+    with pytest.raises(RuntimeError, match='email was not sent'):
+        paper.generate_tldr(client, params)
+    assert len(calls) == 2
+
+
+def test_atom_arxiv_id_builds_valid_pdf_and_source_urls():
+    from zotero_arxiv_daily.retriever.arxiv_retriever import _entry_to_arxiv_result
+    entry = SimpleNamespace(id='http://arxiv.org/abs/2610.12406v1', title='Test', summary='Abstract')
+    result = _entry_to_arxiv_result(entry)
+    assert result.pdf_url == 'https://arxiv.org/pdf/2610.12406v1'
+    assert result.source_url() == 'https://arxiv.org/src/2610.12406v1'
