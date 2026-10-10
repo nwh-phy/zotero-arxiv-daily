@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import smtplib
 import ssl
+import arxiv
 
 import numpy as np
 from hydra import compose, initialize_config_dir
@@ -38,6 +39,7 @@ executor = Executor(config)
 corpus = []
 papers = []
 ranked = []
+candidate_origin = 'current RSS'
 
 def zotero_check():
     global corpus
@@ -65,12 +67,29 @@ def arxiv_check():
     return {'new_papers': len(papers), 'categories': list(config.source.arxiv.category)}
 check('arxiv', arxiv_check)
 
+# Verification only: empty daily RSS must still suppress production delivery.
+# Real older arXiv records exercise ranking/summary without inventing papers.
+if not papers:
+    def historical_check():
+        global papers, candidate_origin
+        query = ' OR '.join('cat:' + c for c in config.source.arxiv.category)
+        search = arxiv.Search(query=query, max_results=10, sort_by=arxiv.SortCriterion.SubmittedDate)
+        raw = list(arxiv.Client(page_size=10, num_retries=2, delay_seconds=3).results(search))
+        papers = [Paper(source='arxiv', title=p.title, authors=[a.name for a in p.authors],
+                        abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
+                        published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
+        assert papers, 'No historical records returned'
+        candidate_origin = 'historical arXiv API records (verification only)'
+        return {'records': len(papers), 'production_fallback': False}
+    check('historical_arxiv_sample', historical_check)
+
 def ranking_check():
     global ranked
     ranked = executor.reranker.rerank(papers, corpus)[:config.executor.max_paper_num]
     assert 0 < len(ranked) <= 10
     assert all(ranked[i].score >= ranked[i+1].score for i in range(len(ranked)-1))
-    return {'selected': len(ranked), 'descending_scores': [round(float(p.score), 4) for p in ranked]}
+    return {'selected': len(ranked), 'candidate_origin': candidate_origin,
+            'descending_scores': [round(float(p.score), 4) for p in ranked]}
 if papers and corpus:
     check('ranking', ranking_check)
 else:
@@ -94,7 +113,8 @@ def summary_check():
     assert p.url in html and p.pdf_url in html
     (out/'sample.html').write_text(html)
     (out/'sample.txt').write_text(p.title+'\n'+summary)
-    return {'characters': len(summary), 'evidence': 'abstract-only', 'sample_title': p.title}
+    return {'characters': len(summary), 'candidate_origin': candidate_origin,
+            'evidence': 'abstract-only', 'sample_title': p.title}
 if papers:
     check('chinese_summary_and_html', summary_check)
 else:

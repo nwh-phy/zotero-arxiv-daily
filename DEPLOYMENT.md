@@ -15,7 +15,7 @@ The deployed language is Chinese. Abstract-confirmed facts and facts confirmed b
 
 Use the repository Settings / Secrets and variables / Actions pages, or `gh secret set NAME -R nwh-phy/zotero-arxiv-daily` with secure interactive input, for sender address, receiver address and SMTP app password. Set `SMTP_SERVER` and `SMTP_PORT` as variables. Never provide a mailbox login password or put credentials in YAML.
 
-Run the `Test` workflow. Its native tests are offline; its live checks cover Zotero, CPU embedding, arXiv, ranking, LLM, Chinese summary, HTML rendering and SMTP authentication. Missing SMTP is explicitly BLOCKED. A green Test run does not mean an email was sent. Verification artifacts are retained for 14 days. The sample uses a real current RSS paper and its abstract; it does not invent substitute papers on empty days.
+Run the `Test` workflow. Its native tests are offline; its live checks cover Zotero, CPU embedding, arXiv, ranking, LLM, Chinese summary, HTML rendering and SMTP authentication. Missing SMTP is explicitly BLOCKED. A green Test run does not mean an email was sent. Verification artifacts are retained for 14 days. The sample uses a real current RSS paper and its abstract; on empty RSS days, a separate arXiv API query supplies real historical records solely for verification. These are labelled as historical samples and never sent by the production workflow.
 
 Only after SMTP authentication succeeds, set `DELIVERY_ENABLED=true` and manually run `Send emails daily` to verify actual email delivery. If credentials are missing, preflight lists only their names. Until then, the daily job is deliberately skipped.
 
