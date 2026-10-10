@@ -159,7 +159,7 @@ def send_email(config:DictConfig, html:str):
 
     try:
         server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
     except Exception as e:
         logger.debug("STARTTLS unavailable; trying verified SMTP SSL.")
         server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30, context=ssl.create_default_context())

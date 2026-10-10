@@ -151,7 +151,7 @@ def make_stub_smtp(sent_emails: list):
         def __init__(self, *args, **kwargs):
             pass
 
-        def starttls(self):
+        def starttls(self, **kwargs):
             pass
 
         def login(self, user, password):

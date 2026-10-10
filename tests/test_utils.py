@@ -142,7 +142,7 @@ def test_send_email_falls_back_to_ssl(config, monkeypatch):
     class StubSMTP_TLS_Fails:
         def __init__(self, *a, **kw):
             call_count["smtp"] += 1
-        def starttls(self):
+        def starttls(self, **kwargs):
             raise OSError("TLS not supported")
 
     class StubSMTP_SSL(StubOK):
@@ -159,7 +159,7 @@ def test_send_email_rejects_plaintext(config, monkeypatch):
     class NoTLS:
         def __init__(self, *a, **kw):
             calls.append('SMTP')
-        def starttls(self):
+        def starttls(self, **kwargs):
             raise OSError('TLS unavailable')
     def no_ssl(*args, **kwargs):
         raise OSError('SSL unavailable')

@@ -4,7 +4,6 @@ from omegaconf import DictConfig, ListConfig
 from .utils import glob_match
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
-import random
 from datetime import datetime
 from .reranker import get_reranker_cls
 from .construct_email import render_email
@@ -85,9 +84,7 @@ class Executor:
                 )
             ]
         if self.include_path_patterns or self.ignore_path_patterns:
-            samples = random.sample(corpus, min(5, len(corpus)))
-            samples = '\n'.join([c.title + ' - ' + '\n'.join(c.paths) for c in samples])
-            logger.info(f"Selected {len(corpus)} zotero papers:\n{samples}\n...")
+            logger.info(f"Selected {len(corpus)} Zotero papers with abstracts")
         return corpus
 
     

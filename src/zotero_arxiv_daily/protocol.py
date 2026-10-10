@@ -85,6 +85,8 @@ class Paper:
                 {"role": "user", "content": prompt},
             ],
         )
+        if not tldr or not tldr.strip():
+            raise ValueError("Empty summary from LLM")
         return tldr
     
     def generate_tldr(self, openai_client:OpenAI,llm_params:dict) -> str:

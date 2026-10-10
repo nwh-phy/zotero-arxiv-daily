@@ -1,0 +1,28 @@
+# Physics literature digest deployment
+
+The fork runs on GitHub-hosted Ubuntu with Python 3.13 and CPU PyTorch. The original recency-weighted embedding ranking is preserved. Scheduled trigger: `15 0 * * *` (08:15 Asia/Shanghai). GitHub may delay scheduled jobs; this is a trigger time, not a guaranteed mail arrival time.
+
+## Repository settings
+
+Actions Secrets: `ZOTERO_ID`, `ZOTERO_KEY`, `OPENAI_API_KEY`, `OPENAI_API_BASE`, `SENDER`, `RECEIVER`, `SENDER_PASSWORD`.
+Actions Variables: `CUSTOM_CONFIG` (optional non-sensitive YAML override), `SMTP_SERVER`, `SMTP_PORT` (465 default), `DELIVERY_ENABLED`.
+
+`CUSTOM_CONFIG` must contain environment references for credentials, never credential values. The workflow does not print it. All credential values belong in Secrets.
+
+The deployed language is Chinese. Abstract-confirmed facts and facts confirmed by the supplied full-text excerpt must be distinguished; the input is capped to 4,000 tokens and is not a complete-paper review. English titles, authors, arXiv publication date/journal metadata and original/PDF links are rendered separately. Failed or empty summaries stop delivery instead of quietly substituting English abstracts. Author affiliations are disabled to avoid a second LLM request per paper.
+
+## Complete SMTP setup
+
+Use the repository Settings / Secrets and variables / Actions pages, or `gh secret set NAME -R nwh-phy/zotero-arxiv-daily` with secure interactive input, for sender address, receiver address and SMTP app password. Set `SMTP_SERVER` and `SMTP_PORT` as variables. Never provide a mailbox login password or put credentials in YAML.
+
+Run the `Test` workflow. Its native tests are offline; its live checks cover Zotero, CPU embedding, arXiv, ranking, LLM, Chinese summary, HTML rendering and SMTP authentication. Missing SMTP is explicitly BLOCKED. A green Test run does not mean an email was sent. Verification artifacts are retained for 14 days. The sample uses a real current RSS paper and its abstract; it does not invent substitute papers on empty days.
+
+Only after SMTP authentication succeeds, set `DELIVERY_ENABLED=true` and manually run `Send emails daily` to verify actual email delivery. If credentials are missing, preflight lists only their names. Until then, the daily job is deliberately skipped.
+
+## Operations and limits
+
+Keep Alive commits a timestamp monthly to retain repository activity. Native CI tests exclude the model-download test; the Test workflow explicitly exercises the configured embedding model on Ubuntu. Both uv dependencies and Hugging Face downloads are cached. Jobs have bounded timeouts, and LLM retries are limited.
+
+No new papers means no email. A China-date cache marker is saved after SMTP accepts the message, and delivery runs are serialized. This is best-effort duplicate suppression, not transactional exactly-once delivery: cache eviction, cache-save failure or interrupted SMTP acceptance can allow duplicates. Do not blindly rerun a delivery job when SMTP acceptance is uncertain. SMTP acceptance does not establish recipient inbox arrival.
+
+Zotero access is read-only. Corpus filtering uses existing physics-oriented collection paths. No server, Docker or paid embedding resource is provisioned. The LLM reuses an existing OpenAI-compatible service; its availability and quota remain external dependencies.
