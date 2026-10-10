@@ -21,3 +21,17 @@ def test_email_escapes_untrusted_paper_and_summary():
     assert 'javascript:' not in html
     assert paper.url in html
     assert '推荐 1 篇' in html
+
+
+def test_noncompliant_summary_cannot_be_sent_after_bounded_repair():
+    calls = []
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='English only'))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    params = {'strict_summary': True, 'summary_min_chars': 150, 'summary_max_chars': 250,
+              'summary_instructions': 'Use Chinese and supplied evidence only.'}
+    with pytest.raises(RuntimeError, match='email was not sent'):
+        make_sample_paper().generate_tldr(client, params)
+    assert len(calls) == 2
+    assert make_sample_paper().title in calls[1]['messages'][1]['content']

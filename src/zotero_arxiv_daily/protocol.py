@@ -87,6 +87,26 @@ class Paper:
         )
         if not tldr or not tldr.strip():
             raise ValueError("Empty summary from LLM")
+        min_chars = llm_params.get('summary_min_chars')
+        max_chars = llm_params.get('summary_max_chars')
+        if min_chars is not None and max_chars is not None:
+            def acceptable(text):
+                count = sum('\u4e00' <= c <= '\u9fff' for c in text)
+                return (min_chars <= count <= max_chars
+                        and all(label in text for label in ['问题', '方法', '结论', '创新', '参考价值'])
+                        and ('摘要确认' in text or '全文片段确认' in text))
+            if not acceptable(tldr):
+                # One bounded repair using the original evidence, never truncation.
+                tldr = _request_llm(openai_client, llm_params, [
+                    {'role': 'system', 'content': instructions},
+                    {'role': 'user', 'content': prompt},
+                    {'role': 'assistant', 'content': tldr},
+                    {'role': 'user', 'content':
+                     f'请修正格式和篇幅：总计{min_chars}～{max_chars}个汉字，目标200字，证据标签计入字数。'
+                     '必须包含问题、方法、结论、创新、参考价值五项和证据标记。只依据原始论文文本，不得增加事实或机制。'},
+                ])
+            if not tldr or not acceptable(tldr):
+                raise ValueError('Summary still violates the requested format or length')
         return tldr
     
     def generate_tldr(self, openai_client:OpenAI,llm_params:dict) -> str:

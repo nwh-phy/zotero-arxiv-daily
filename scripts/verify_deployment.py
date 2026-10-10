@@ -1,5 +1,6 @@
 """Live verification; SMTP login is optional, and this script never sends email."""
 import json
+import argparse
 import os
 from pathlib import Path
 import smtplib
@@ -19,12 +20,16 @@ from zotero_arxiv_daily.protocol import Paper
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _entry_to_arxiv_result
 from zotero_arxiv_daily.reranker.local import LocalReranker
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--summary-only', action='store_true')
+args = parser.parse_args()
+
 with initialize_config_dir(config_dir=str(Path('config').resolve()), version_base=None):
     config = compose(config_name='default')
 params = OmegaConf.to_container(config.llm, resolve=True)
 out = Path('verification')
 out.mkdir(exist_ok=True)
-results = {}
+results = {'verification_scope': {'status': 'INFO', 'detail': 'summary-only' if args.summary_only else 'full'}}
 failed = False
 
 def check(name, fn):
@@ -50,7 +55,10 @@ def zotero_check():
     corpus = executor.filter_corpus(all_corpus)
     assert corpus, 'No usable abstracts'
     return {'paper_types_with_abstract': len(all_corpus), 'selected_with_abstract': len(corpus)}
-check('zotero', zotero_check)
+if not args.summary_only:
+    check('zotero', zotero_check)
+else:
+    results['zotero'] = {'status': 'SKIP', 'reason': 'Targeted summary retest; use prior full-run evidence'}
 
 def embedding_check():
     reranker = LocalReranker(config)
@@ -58,7 +66,10 @@ def embedding_check():
                                       ['Momentum resolved EELS in two dimensional materials'])
     assert sim.shape == (1, 1) and np.isfinite(sim).all()
     return {'model': config.reranker.local.model, 'device': 'cpu', 'shape': list(sim.shape)}
-check('embedding', embedding_check)
+if not args.summary_only:
+    check('embedding', embedding_check)
+else:
+    results['embedding'] = {'status': 'SKIP', 'reason': 'Unchanged; previously verified in full run'}
 
 def arxiv_check():
     global papers
@@ -108,7 +119,7 @@ def ranking_check():
 if papers and corpus:
     check('ranking', ranking_check)
 else:
-    results['ranking'] = {'status': 'SKIP', 'reason': 'No live papers or usable corpus'}
+    results['ranking'] = {'status': 'SKIP', 'reason': 'Targeted summary retest' if args.summary_only else 'No live papers or usable corpus'}
 
 def llm_check():
     from zotero_arxiv_daily.protocol import _request_llm
@@ -121,6 +132,7 @@ check('llm', llm_check)
 def summary_check():
     p = ranked[0] if ranked else papers[0]
     summary = p.generate_tldr(executor.openai_client, params)
+    (out/'sample-draft.txt').write_text(p.title+'\n'+p.url+'\n'+summary)
     assert any('\u4e00' <= c <= '\u9fff' for c in summary)
     assert all(label in summary for label in ['问题', '方法', '结论', '创新', '参考价值'])
     assert '摘要确认' in summary
