@@ -48,3 +48,17 @@ def test_list_config_is_rejected_before_write(tmp_path):
     path.write_text('executor:\n  history_enabled: true\n')
     with pytest.raises(ValueError, match='YAML mapping'):
         apply_override(path, '- arxiv\n- biorxiv')
+
+
+def test_malformed_override_cli_never_echoes_sensitive_yaml(tmp_path):
+    import os
+    import subprocess
+    import sys
+    path = tmp_path / 'config'
+    path.mkdir()
+    (path / 'custom.yaml').write_text('executor:\n  history_enabled: true\n')
+    result = subprocess.run([sys.executable, str(Path('scripts/apply_config_override.py').resolve())], cwd=tmp_path,
+                            env={**os.environ, 'CUSTOM_CONFIG': 'llm: [ SECRET_SENTINEL_MUST_NOT_ECHO'},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0 and 'Configuration override failed' in result.stderr
+    assert 'SECRET_SENTINEL_MUST_NOT_ECHO' not in result.stdout + result.stderr

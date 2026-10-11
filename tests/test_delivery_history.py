@@ -226,3 +226,27 @@ def test_email_period_counts_theme_and_absent_metadata_are_clear():
     assert '455' in plain and '400' in plain and 'EELS 1篇' in plain
     assert 'Unknown Affiliation' not in html and '未提供（预印本）' not in html
     assert '.star-wrapper' not in plain
+
+
+def test_reconcile_cli_inspects_and_requires_exact_batch_without_sending(weekly_executor):
+    import subprocess
+    import sys
+    from pathlib import Path
+    from omegaconf import OmegaConf
+    config, tmp_path, end = weekly_executor
+    (tmp_path / 'config').mkdir()
+    OmegaConf.save(config, tmp_path / 'config/default.yaml')
+    executor = Executor(config)
+    batch = executor.history.begin([make_sample_paper()], [make_sample_paper()], end.isoformat())
+    command = [sys.executable, str(Path('scripts/reconcile_delivery.py').resolve())]
+    result = subprocess.run(command + ['--outcome', 'inspect'], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0 and batch in result.stdout
+    wrong = subprocess.run(command + ['--outcome', 'accepted', '--batch-id', 'wrong'], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert wrong.returncode != 0
+    executor.history.load()
+    assert executor.history.data['pending']['batch_id'] == batch
+    accepted = subprocess.run(command + ['--outcome', 'accepted', '--batch-id', batch], cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert accepted.returncode == 0 and 'no email was sent' in accepted.stdout
+    executor.history.load()
+    assert executor.history.data['covered_until'] == end.isoformat()
+    assert executor.history.data['pending'] is None
