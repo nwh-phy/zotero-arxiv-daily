@@ -34,16 +34,27 @@ out.mkdir(exist_ok=True)
 results = {'verification_scope': {'status': 'INFO', 'detail': 'summary-only' if args.summary_only else 'full'}}
 failed = False
 
+def save_results():
+    path = out/'results.json'
+    temporary = out/'results.json.tmp'
+    temporary.write_text(json.dumps(results, ensure_ascii=False, indent=2))
+    temporary.replace(path)
+
+
 def check(name, fn):
     global failed
+    results[name] = {'status': 'RUNNING'}
+    save_results()
+    print(name + ': RUNNING', flush=True)
     try:
         detail = fn()
-        results[name] = {'status': 'PASS', 'detail': detail}
+        results[name] = detail if isinstance(detail, dict) and detail.get('status') == 'SKIP' else {'status': 'PASS', 'detail': detail}
     except Exception as exc:
         # External exceptions can embed headers, credentials or request bodies.
         results[name] = {'status': 'FAIL', 'error_type': type(exc).__name__}
         failed = True
-    print(name + ': ' + results[name]['status'])
+    save_results()
+    print(name + ': ' + results[name]['status'], flush=True)
 
 executor = Executor(config)
 corpus = []
@@ -178,9 +189,6 @@ if papers:
             'input_evidence': 'abstract plus selected body excerpts',
             'full_text_citations': '全文片段确认:' in summary}
     check('full_text_summary', full_text_check)
-    detail = results['full_text_summary'].get('detail', {})
-    if detail.get('status') == 'SKIP':
-        results['full_text_summary'] = detail
 else:
     results['full_text_summary'] = {'status': 'SKIP', 'reason': 'No verification paper'}
 
@@ -206,14 +214,14 @@ else:
 if args.send_test and not failed and results.get('smtp', {}).get('status') == 'PASS' and results.get('chinese_summary_and_html', {}).get('status') == 'PASS':
     def send_test_check():
         banner = '<p><strong>部署测试邮件</strong>：此邮件用于验证 Gmail 投递与中文简报显示。</p>'
-        if candidate_origin != 'current RSS':
+        if candidate_origin.startswith('historical'):
             banner += '<p>以下为真实历史 arXiv 样本，仅用于部署测试，不代表今日推荐。</p>'
         send_email(config, banner + (out/'sample.html').read_text(), subject='[部署测试] Zotero arXiv 中文文献简报')
         return {'smtp_accepted': True, 'inbox_confirmed': False, 'candidate_origin': candidate_origin}
     check('end_to_end_email', send_test_check)
 else:
     results['end_to_end_email'] = {'status': 'NOT_RUN', 'reason': 'Test sending not requested or prerequisites did not pass'}
-(out/'results.json').write_text(json.dumps(results, ensure_ascii=False, indent=2))
+save_results()
 summary = '\n'.join(f"- {name}: {r['status']}" for name,r in results.items())
 if step_summary := os.environ.get('GITHUB_STEP_SUMMARY'):
     with open(step_summary, 'a') as f:
