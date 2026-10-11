@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 from .evidence import EVIDENCE_VERSION, build_summary_prompt
 
 CACHE_VERSION = 1
-EXTRACTOR_VERSION = 1
+EXTRACTOR_VERSION = 2
 
 
 def _digest(value):

@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 
 HISTORY_VERSION = 1
+HISTORY_RETENTION_DAYS = 120
 
 
 def paper_identity(paper):
@@ -94,7 +95,8 @@ class DeliveryHistory:
 
     def window_start(self, end, lookback_days, overlap_days, max_backfill_days):
         self.assert_ready()
-        if lookback_days <= 0 or overlap_days < 0 or max_backfill_days < lookback_days:
+        if (lookback_days <= 0 or not 0 <= overlap_days <= HISTORY_RETENTION_DAYS
+                or max_backfill_days < lookback_days):
             raise ValueError('Invalid retrieval coverage parameters')
         covered = self.data.get('covered_until')
         if covered:
@@ -158,7 +160,7 @@ class DeliveryHistory:
             raise ValueError('Coverage cannot move backwards')
         self.data['covered_until'] = end
         self.data['seen'].update(seen)
-        cutoff = utc_date(end) - timedelta(days=120)
+        cutoff = utc_date(end) - timedelta(days=HISTORY_RETENTION_DAYS)
         self.data['seen'] = {key: date for key, date in self.data['seen'].items() if utc_date(date) >= cutoff}
         self.data['pending'] = None
         self.save()

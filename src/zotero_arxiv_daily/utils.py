@@ -3,6 +3,7 @@ import re
 import glob
 import math
 import smtplib
+import posixpath
 from collections import Counter
 from email.header import Header
 from email.mime.text import MIMEText
@@ -60,7 +61,10 @@ def extract_tex_code_from_tar(file_path:str, paper_id:str, paper_title:str | Non
         logger.debug(f"Failed to find main tex file of {paper_id}: Not a tar file.")
         return None
  
-    tex_files = [f for f in tar.getnames() if f.endswith('.tex')]
+    tex_files = [f.name for f in tar.getmembers() if f.isfile() and f.name.endswith('.tex')]
+    if sum(tar.getmember(name).size for name in tex_files) > 32 * 1024 * 1024:
+        tar.close()
+        raise ValueError('TeX source exceeds the bounded extraction size')
     if len(tex_files) == 0:
         logger.debug(f"Failed to find main tex file of {paper_id}: No tex file.")
         tar.close()
@@ -92,7 +96,7 @@ def extract_tex_code_from_tar(file_path:str, paper_id:str, paper_title:str | Non
     for t in tex_files:
         f = tar.extractfile(t)
         content = f.read().decode('utf-8',errors='ignore')
-        content = re.sub(r'%.*\n', '\n', content)
+        content = re.sub(r'(?<!\\)%[^\n]*', '', content)
         content = re.sub(r'\\begin{comment}.*?\\end{comment}', '', content, flags=re.DOTALL)
         content = re.sub(r'\\iffalse.*?\\fi', '', content, flags=re.DOTALL)
         content = re.sub(r'\n+', '\n', content)
@@ -115,16 +119,32 @@ def extract_tex_code_from_tar(file_path:str, paper_id:str, paper_title:str | Non
                 logger.debug(f"Multiple document blocks found in {paper_id}; no title provided, using first candidate {main_tex}")
 
     if main_tex is not None:
-        main_source:str = file_contents[main_tex]
-        #find and replace all included sub-files
-        include_files = re.findall(r'\\input\{(.+?)\}', main_source) + re.findall(r'\\include\{(.+?)\}', main_source)
-        for f in include_files:
-            if not f.endswith('.tex'):
-                file_name = f + '.tex'
-            else:
-                file_name = f
-            main_source = main_source.replace(f'\\input{{{f}}}', file_contents.get(file_name, ''))
-        file_contents["all"] = main_source
+        normalized = {posixpath.normpath(name): content for name, content in file_contents.items()}
+        root = posixpath.dirname(posixpath.normpath(main_tex))
+        include_pattern = re.compile(r'\\(?:input|include)\s*(?:\{([^}]+)\}|([^\s%{}]+))')
+        def expand(filename, stack=()):
+            if filename in stack or len(stack) >= 16:
+                raise ValueError('Cyclic or excessively nested TeX includes')
+            text = normalized[filename]
+            expanded_size = len(text)
+            def replace(match):
+                nonlocal expanded_size
+                name = (match.group(1) or match.group(2)).strip()
+                name = name if name.endswith('.tex') else name + '.tex'
+                choices = [posixpath.normpath(posixpath.join(root, name)),
+                           posixpath.normpath(posixpath.join(posixpath.dirname(filename), name)),
+                           posixpath.normpath(name)]
+                target = next((choice for choice in choices if choice in normalized), None)
+                content = expand(target, (*stack, filename)) if target else '[TeX include unavailable]'
+                expanded_size += len(content) - len(match.group(0))
+                if expanded_size > 32 * 1024 * 1024:
+                    raise ValueError('Expanded TeX source exceeds the bounded extraction size')
+                return content
+            return include_pattern.sub(replace, text)
+        try:
+            file_contents['all'] = expand(posixpath.normpath(main_tex))
+        finally:
+            tar.close()
     else:
         logger.debug(f"Failed to find main tex file of {paper_id}: No tex file containing the document block.")
         file_contents["all"] = None
@@ -192,7 +212,8 @@ def send_email(config: DictConfig, html: str, subject: str | None = None, messag
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)
     except Exception as exc:
-        rejected = isinstance(exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError))
+        rejected = isinstance(exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused,
+                                    smtplib.SMTPDataError, smtplib.SMTPHeloError, smtplib.SMTPNotSupportedError))
         raise EmailDeliveryError(phase, type(exc).__name__, uncertain=phase == 'submission' and not rejected) from None
     finally:
         if server is not None:

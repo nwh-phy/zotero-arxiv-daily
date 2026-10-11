@@ -20,8 +20,9 @@ class ApiReranker(BaseReranker):
             data = list(response.data)
             if len(data) != len(batch):
                 raise ValueError('Embedding response omitted inputs')
-            if all(hasattr(item, 'index') for item in data):
-                if sorted(item.index for item in data) != list(range(len(batch))):
+            if any(hasattr(item, 'index') for item in data):
+                if (not all(hasattr(item, 'index') for item in data)
+                        or sorted(item.index for item in data) != list(range(len(batch)))):
                     raise ValueError('Embedding response has invalid indices')
                 data.sort(key=lambda item: item.index)
             all_embeddings.extend([item.embedding for item in data])
@@ -31,6 +32,7 @@ class ApiReranker(BaseReranker):
         norms1 = np.linalg.norm(s1_embeddings, axis=1, keepdims=True)
         norms2 = np.linalg.norm(s2_embeddings, axis=1, keepdims=True)
         if (not np.isfinite(s1_embeddings).all() or not np.isfinite(s2_embeddings).all()
+                or not np.isfinite(norms1).all() or not np.isfinite(norms2).all()
                 or (norms1 == 0).any() or (norms2 == 0).any()):
             raise ValueError('Embedding response contains nonfinite or zero vectors')
         s1_embeddings_normalized = s1_embeddings / norms1

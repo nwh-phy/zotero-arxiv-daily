@@ -49,7 +49,8 @@ executor = Executor(config)
 corpus = []
 papers = []
 ranked = []
-candidate_origin = 'current RSS'
+candidate_origin = 'current configured arXiv window'
+raw_by_url = {}
 
 def zotero_check():
     global corpus
@@ -74,8 +75,9 @@ else:
     results['embedding'] = {'status': 'SKIP', 'reason': 'Unchanged; previously verified in full run'}
 
 def arxiv_check():
-    global papers
+    global papers, raw_by_url
     raw = ArxivRetriever(config)._retrieve_raw_papers()
+    raw_by_url = {p.entry_id: p for p in raw}
     papers = [Paper(source='arxiv', title=p.title, authors=[a.name for a in p.authors],
                     abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
                     published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
@@ -87,7 +89,7 @@ check('arxiv', arxiv_check)
 # Real older arXiv records exercise ranking/summary without inventing papers.
 if not papers:
     def historical_check():
-        global papers, candidate_origin
+        global papers, candidate_origin, raw_by_url
         query = ' OR '.join('cat:' + c for c in config.source.arxiv.category)
         url = 'https://export.arxiv.org/api/query?' + urllib.parse.urlencode({
             'search_query': query, 'max_results': 10, 'sortBy': 'submittedDate', 'sortOrder': 'descending'})
@@ -107,6 +109,7 @@ if not papers:
                         abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
                         published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
         assert papers, 'No historical records returned'
+        raw_by_url = {p.entry_id: p for p in raw}
         candidate_origin = 'historical arXiv API records (verification only)'
         return {'records': len(papers), 'production_fallback': False}
     check('historical_arxiv_sample', historical_check)
@@ -154,6 +157,32 @@ if papers:
     check('chinese_summary_and_html', summary_check)
 else:
     results['chinese_summary_and_html'] = {'status': 'SKIP', 'reason': 'No live papers; no substitute invented'}
+
+# Verify section-aware extraction and summary provenance with one selected paper.
+# This never sends mail or updates production coverage/checkpoints.
+if papers:
+    def full_text_check():
+        from zotero_arxiv_daily.evidence import select_excerpts
+        selected = ranked[0] if ranked else papers[0]
+        raw = raw_by_url[selected.url]
+        enriched = ArxivRetriever(config).convert_to_paper(raw)
+        if not enriched.full_text or not select_excerpts(enriched.full_text):
+            return {'status': 'SKIP', 'reason': 'No usable full-text source; abstract-only behavior verified separately'}
+        summary = enriched.generate_tldr(executor.openai_client, params)
+        assert enriched.summary_is_acceptable(summary, params)
+        assert enriched.evidence_excerpts
+        (out/'fulltext-sample.txt').write_text(enriched.title+'\n'+enriched.url+'\n'+summary)
+        (out/'fulltext-sample.html').write_text(render_email([enriched]))
+        return {'source_url': enriched.url, 'sections': [
+            {'id': e['id'], 'section': e['section']} for e in enriched.evidence_excerpts],
+            'input_evidence': 'abstract plus selected body excerpts',
+            'full_text_citations': '全文片段确认:' in summary}
+    check('full_text_summary', full_text_check)
+    detail = results['full_text_summary'].get('detail', {})
+    if detail.get('status') == 'SKIP':
+        results['full_text_summary'] = detail
+else:
+    results['full_text_summary'] = {'status': 'SKIP', 'reason': 'No verification paper'}
 
 smtp_names = ['SENDER', 'RECEIVER', 'SENDER_PASSWORD', 'SMTP_SERVER']
 missing = [name for name in smtp_names if not os.environ.get(name)]
