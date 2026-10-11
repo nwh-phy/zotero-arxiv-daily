@@ -115,9 +115,11 @@ def ranking_check():
     global ranked
     ranked = executor.reranker.rerank(papers, corpus)[:config.executor.max_paper_num]
     assert 0 < len(ranked) <= 10
-    assert all(ranked[i].score >= ranked[i+1].score for i in range(len(ranked)-1))
+    assert all(ranked[i].selection_score >= ranked[i+1].selection_score for i in range(len(ranked)-1))
     return {'selected': len(ranked), 'candidate_origin': candidate_origin,
-            'descending_scores': [round(float(p.score), 4) for p in ranked]}
+            'relevance_scores': [round(float(p.score), 4) for p in ranked],
+            'selection_scores': [round(float(p.selection_score), 4) for p in ranked],
+            'themes': [p.recommendation_theme for p in ranked]}
 if papers and corpus:
     check('ranking', ranking_check)
 else:

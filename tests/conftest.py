@@ -47,6 +47,10 @@ def _base_config():
                 "executor.source=[arxiv]",
                 "executor.reranker=api",
                 "executor.debug=false",
+                "executor.progress_dir=null",
+                "executor.history_enabled=false",
+                "executor.output_dir=null",
+                "reranker.ranking.mode=legacy",
                 "executor.send_empty=false",
             ],
         )

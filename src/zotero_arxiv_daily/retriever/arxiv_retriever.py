@@ -22,6 +22,7 @@ T = TypeVar("T")
 
 DOWNLOAD_TIMEOUT = (10, 60)
 PDF_EXTRACT_TIMEOUT = 180
+HTML_EXTRACT_TIMEOUT = 90
 TAR_EXTRACT_TIMEOUT = 180
 
 HTML_TAG_PATTERN = re.compile(
@@ -287,7 +288,9 @@ class ArxivRetriever(BaseRetriever):
     def _retrieve_window_papers(self) -> list[ArxivResult]:
         # Stable UTC midnight boundaries avoid gaps from scheduler minute delays.
         end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=int(self.config.source.arxiv.lookback_days))
+        start = getattr(self, 'window_start', None) or end - timedelta(days=int(self.config.source.arxiv.lookback_days))
+        if start.tzinfo is None or not start < end:
+            raise ValueError('Invalid UTC retrieval window')
         cats = list(self.config.source.arxiv.category)
         query = '(' + ' OR '.join('cat:' + c for c in cats) + ') AND submittedDate:[' + start.strftime('%Y%m%d%H%M') + ' TO ' + (end-timedelta(minutes=1)).strftime('%Y%m%d%H%M') + ']'
         papers, seen = [], set()
@@ -316,7 +319,7 @@ class ArxivRetriever(BaseRetriever):
                     continue
                 if not self.config.source.arxiv.get('include_cross_list', False) and paper.primary_category not in cats:
                     continue
-                key = paper.entry_id.rsplit('v', 1)[0]
+                key = re.sub(r'v\d+$', '', paper.entry_id)
                 if key not in seen:
                     seen.add(key)
                     papers.append(paper)
@@ -369,11 +372,10 @@ class ArxivRetriever(BaseRetriever):
 
 def extract_text_from_html(paper: ArxivResult) -> str | None:
     html_url = paper.entry_id.replace("/abs/", "/html/")
-    try:
-        return _extract_text_from_html_worker(html_url)
-    except Exception as exc:
-        logger.warning(f"HTML extraction failed for {paper.title}: {exc}")
-        return None
+    return _run_with_hard_timeout(
+        _extract_text_from_html_worker, (html_url,), timeout=HTML_EXTRACT_TIMEOUT,
+        operation='HTML extraction', paper_title=paper.title,
+    )
 
 
 def extract_text_from_pdf(paper: ArxivResult) -> str | None:

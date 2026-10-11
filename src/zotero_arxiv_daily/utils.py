@@ -139,31 +139,69 @@ def glob_match(path:str, pattern:str) -> bool:
     re_pattern = glob.translate(pattern,recursive=True)
     return re.match(re_pattern, path) is not None
 
-def send_email(config:DictConfig, html:str, subject:str | None = None):
-    sender = config.email.sender
-    receiver = config.email.receiver
-    password = config.email.sender_password
-    smtp_server = config.email.smtp_server
-    smtp_port = config.email.smtp_port
-    def _format_addr(s):
-        name, addr = parseaddr(s)
-        return formataddr((Header(name, 'utf-8').encode(), addr))
+class EmailDeliveryError(OSError):
+    """A sanitized SMTP failure with an explicit acceptance-uncertainty flag."""
+    def __init__(self, phase, error_type, *, uncertain=False):
+        super().__init__(f"SMTP {phase} failed ({error_type}); "
+                         + ("acceptance is uncertain" if uncertain else "message was not accepted"))
+        self.uncertain = uncertain
 
-    msg = MIMEText(html, 'html', 'utf-8')
-    msg['From'] = _format_addr('Github Action <%s>' % sender)
-    msg['To'] = _format_addr('You <%s>' % receiver)
+
+def send_email(config: DictConfig, html: str, subject: str | None = None, message_id: str | None = None):
+    from email.mime.multipart import MIMEMultipart
+    from email.utils import format_datetime, make_msgid
     from zoneinfo import ZoneInfo
     import ssl
-    today = datetime.datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y/%m/%d')
-    msg['Subject'] = Header(subject or f'科研文献简报 {today}', 'utf-8').encode()
+    from .construct_email import html_to_text
 
+    sender, receiver = config.email.sender, config.email.receiver
+    def _format_addr(value):
+        name, addr = parseaddr(value)
+        return formataddr((Header(name, 'utf-8').encode(), addr))
+
+    now = datetime.datetime.now(ZoneInfo('Asia/Shanghai'))
+    msg = MIMEMultipart('alternative')
+    msg['From'] = _format_addr(f'科研文献周报 <{sender}>')
+    msg['To'] = _format_addr(receiver)
+    msg['Subject'] = Header(subject or f'科研文献简报 {now:%Y/%m/%d}', 'utf-8').encode()
+    msg['Date'] = format_datetime(now)
+    msg['Message-ID'] = message_id or make_msgid(domain='zotero-arxiv-daily.local')
+    msg.attach(MIMEText(html_to_text(html), 'plain', 'utf-8'))
+    msg.attach(MIMEText(html, 'html', 'utf-8'))
+    server = None
+    phase = 'connection or TLS'
     try:
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
-        server.starttls(context=ssl.create_default_context())
-    except Exception as e:
-        logger.debug("STARTTLS unavailable; trying verified SMTP SSL.")
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30, context=ssl.create_default_context())
-
-    server.login(sender, password)
-    server.sendmail(sender, [receiver], msg.as_string())
-    server.quit()
+        port = int(config.email.smtp_port)
+        if port == 465:
+            server = smtplib.SMTP_SSL(config.email.smtp_server, port, timeout=30, context=ssl.create_default_context())
+        else:
+            try:
+                server = smtplib.SMTP(config.email.smtp_server, port, timeout=30)
+                server.starttls(context=ssl.create_default_context())
+            except Exception:
+                if server is not None:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
+                server = smtplib.SMTP_SSL(config.email.smtp_server, port, timeout=30, context=ssl.create_default_context())
+        phase = 'authentication'
+        server.login(sender, config.email.sender_password)
+        phase = 'submission'
+        refused = server.sendmail(sender, [receiver], msg.as_string())
+        if refused:
+            raise smtplib.SMTPRecipientsRefused(refused)
+    except Exception as exc:
+        rejected = isinstance(exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError))
+        raise EmailDeliveryError(phase, type(exc).__name__, uncertain=phase == 'submission' and not rejected) from None
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                # A QUIT/disconnect failure cannot undo successful DATA acceptance.
+                try:
+                    server.close()
+                except Exception:
+                    pass
+    return msg['Message-ID']

@@ -20,3 +20,8 @@ config/private.yaml
 # Deployment evidence and successful delivery markers
 verification/
 .delivery/
+.paper-progress/
+output/playwright/
+.playwright-cli/
+.coverage
+htmlcov/

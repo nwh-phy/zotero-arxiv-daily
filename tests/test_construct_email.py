@@ -14,7 +14,7 @@ def test_render_email_with_papers():
 
 def test_render_email_empty_list():
     html = render_email([])
-    assert "No Papers Today" in html
+    assert "本期暂无新增推荐" in html
 
 
 def test_render_email_author_truncation():
@@ -44,7 +44,7 @@ def test_render_email_affiliation_truncation():
 def test_render_email_no_affiliations():
     paper = make_sample_paper(affiliations=None, score=7.0, tldr="ok")
     html = render_email([paper])
-    assert "Unknown Affiliation" in html
+    assert "Unknown Affiliation" not in html
 
 
 def test_get_stars_low_score():
@@ -75,4 +75,4 @@ def test_get_block_html_contains_all_fields():
 
 def test_get_empty_html():
     html = get_empty_html()
-    assert "No Papers Today" in html
+    assert "本期暂无新增推荐" in html

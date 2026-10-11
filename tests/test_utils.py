@@ -165,7 +165,7 @@ def test_send_email_rejects_plaintext(config, monkeypatch):
         raise OSError('SSL unavailable')
     monkeypatch.setattr(smtplib, 'SMTP', NoTLS)
     monkeypatch.setattr(smtplib, 'SMTP_SSL', no_ssl)
-    with pytest.raises(OSError, match='SSL unavailable'):
+    with pytest.raises(OSError, match='SMTP connection or TLS failed'):
         send_email(config, '<html>secure only</html>')
     assert calls == ['SMTP']
 
