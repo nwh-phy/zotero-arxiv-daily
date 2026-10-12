@@ -58,3 +58,53 @@ def test_atom_arxiv_id_builds_valid_pdf_and_source_urls():
     result = _entry_to_arxiv_result(entry)
     assert result.pdf_url == 'https://arxiv.org/pdf/2610.12406v1'
     assert result.source_url() == 'https://arxiv.org/src/2610.12406v1'
+
+
+@pytest.mark.parametrize('full_text', [None, '# Results\nMeasured result'])
+def test_repair_receives_actual_violations_and_available_evidence(full_text):
+    params = {'strict_summary': True, 'summary_min_chars': 150, 'summary_max_chars': 250}
+    valid = '\n'.join(f'{label}：' + '中' * 30 + '[摘要确认]'
+                      for label in ['问题', '方法', '结论', '创新', '参考价值'])
+    invalid = '问题：' + '中' * 300 + '[全文片段确认:E99]'
+    responses = iter([invalid, valid])
+    calls = []
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=next(responses)))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    paper = make_sample_paper(full_text=full_text)
+    assert paper.generate_tldr(client, params) == valid
+    feedback = calls[1]['messages'][-1]['content']
+    count = sum('\u4e00' <= c <= '\u9fff' for c in invalid)
+    assert f'实际{count}个汉字' in feedback
+    assert '五项字段缺失或重复' in feedback
+    assert '全文标记格式或编号无效' in feedback
+    assert len(calls) == 2
+    if full_text:
+        assert '允许的全文标记仅为：[全文片段确认:E1]' in feedback
+    else:
+        assert '未提供全文' in feedback
+
+
+def test_invalid_summary_diagnostics_exclude_model_content():
+    paper = make_sample_paper(full_text=None)
+    issues = paper.summary_validation_issues('PRIVATE_MODEL_DRAFT',
+                                            {'summary_min_chars': 150, 'summary_max_chars': 250})
+    assert '实际0个汉字，要求150～250个' in issues
+    assert 'PRIVATE_MODEL_DRAFT' not in ';'.join(issues)
+
+
+def test_empty_model_response_gets_one_bounded_repair():
+    valid = '\n'.join(f'{label}：' + '中' * 30 + '[摘要确认]'
+                      for label in ['问题', '方法', '结论', '创新', '参考价值'])
+    replies = iter([None, valid])
+    calls = []
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=next(replies)))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    params = {'strict_summary': True, 'summary_min_chars': 150, 'summary_max_chars': 250}
+    assert make_sample_paper(full_text=None).generate_tldr(client, params) == valid
+    assert len(calls) == 2
+    assert '摘要为空' in calls[1]['messages'][-1]['content']
+    assert calls[1]['messages'][-2]['content']
