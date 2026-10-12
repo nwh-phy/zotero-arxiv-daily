@@ -129,6 +129,8 @@ class Executor:
                 end, int(options.lookback_days), int(options.get('overlap_days', 2)),
                 int(options.get('max_backfill_days', 90)),
             )
+            if not dry_run:
+                self.history.remember_first_attempt(self.retrievers['arxiv'].window_start)
         for source, retriever in self.retrievers.items():
             logger.info(f'Retrieving {source} papers...')
             papers = retriever.retrieve_papers()

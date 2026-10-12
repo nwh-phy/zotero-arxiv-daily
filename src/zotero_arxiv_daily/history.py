@@ -38,7 +38,8 @@ class DeliveryHistory:
         namespace = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
         self.namespace = namespace
         self.path = Path(directory) / ('history-' + namespace + '.json') if directory else None
-        self.data = {'schema': HISTORY_VERSION, 'covered_until': None, 'seen': {}, 'pending': None}
+        self.data = {'schema': HISTORY_VERSION, 'covered_until': None,
+                     'first_attempt_start': None, 'seen': {}, 'pending': None}
 
     @contextmanager
     def locked(self):
@@ -66,11 +67,16 @@ class DeliveryHistory:
         try:
             data = json.loads(self.path.read_text())
             if (not isinstance(data, dict) or data.get('schema') != HISTORY_VERSION
+                    or 'covered_until' not in data or 'pending' not in data
                     or not isinstance(data.get('seen'), dict)
                     or any(not isinstance(k, str) or not isinstance(v, str) for k, v in data['seen'].items())):
                 raise ValueError('Invalid delivery history')
-            if data.get('covered_until'):
-                utc_date(data['covered_until'])
+            for field in ('covered_until', 'first_attempt_start'):
+                value = data.get(field)
+                if value is not None:
+                    if not isinstance(value, str):
+                        raise ValueError('Invalid coverage timestamp')
+                    utc_date(value)
             for date in data['seen'].values():
                 utc_date(date)
             pending = data.get('pending')
@@ -104,6 +110,10 @@ class DeliveryHistory:
             if previous_end > end:
                 raise RuntimeError('Delivery coverage is ahead of the current UTC date')
             start = previous_end - timedelta(days=overlap_days)
+        elif self.data.get('first_attempt_start'):
+            start = utc_date(self.data['first_attempt_start'])
+            if start > end:
+                raise RuntimeError('Initial attempted coverage is ahead of the current UTC date')
         else:
             start = end - timedelta(days=lookback_days)
         if start == end:
@@ -112,6 +122,13 @@ class DeliveryHistory:
         if end - start > timedelta(days=max_backfill_days):
             raise RuntimeError('Missed coverage exceeds max_backfill_days; increase it explicitly to backfill')
         return start
+
+    def remember_first_attempt(self, start):
+        # Persist intent before retrieval, without claiming successful coverage.
+        # A failed first week must still be included in the next week's retry.
+        if not self.data.get('covered_until') and not self.data.get('first_attempt_start'):
+            self.data['first_attempt_start'] = utc_date(start.isoformat()).isoformat()
+            self.save()
 
     def unseen(self, papers):
         seen = self.data['seen']
@@ -159,6 +176,7 @@ class DeliveryHistory:
         if self.data.get('covered_until') and utc_date(end) < utc_date(self.data['covered_until']):
             raise ValueError('Coverage cannot move backwards')
         self.data['covered_until'] = end
+        self.data['first_attempt_start'] = None
         self.data['seen'].update(seen)
         cutoff = utc_date(end) - timedelta(days=HISTORY_RETENTION_DAYS)
         self.data['seen'] = {key: date for key, date in self.data['seen'].items() if utc_date(date) >= cutoff}

@@ -27,6 +27,51 @@ def test_failed_week_backfills_and_overlap_has_explicit_boundaries(tmp_path):
         assert restored.data['covered_until'] == previous_end.isoformat()
 
 
+def test_first_attempt_is_not_success_but_survives_a_failed_week(tmp_path):
+    state = DeliveryHistory(tmp_path, {})
+    start = state.window_start(END, 7, 2, 90)
+    state.remember_first_attempt(start)
+    assert state.data['covered_until'] is None
+    assert not state.data['seen'] and state.data['pending'] is None
+    restored = DeliveryHistory(tmp_path, {})
+    with restored.locked():
+        assert restored.window_start(END + timedelta(days=7), 7, 2, 90) == start
+        with pytest.raises(RuntimeError, match='max_backfill_days'):
+            restored.window_start(END + timedelta(days=90), 7, 2, 90)
+        restored.complete_empty([], (END + timedelta(days=7)).isoformat())
+        assert restored.data['first_attempt_start'] is None
+
+
+def test_future_initial_attempt_fails_explicitly(tmp_path):
+    state = DeliveryHistory(tmp_path, {})
+    state.remember_first_attempt(END + timedelta(days=1))
+    with pytest.raises(RuntimeError, match='ahead'):
+        state.window_start(END, 7, 2, 90)
+
+
+@pytest.mark.parametrize('field', ['covered_until', 'first_attempt_start'])
+@pytest.mark.parametrize('value', ['', False])
+def test_invalid_coverage_timestamp_does_not_reset_to_first_week(tmp_path, field, value):
+    state = DeliveryHistory(tmp_path, {})
+    state.save()
+    data = json.loads(state.path.read_text())
+    data[field] = value
+    state.path.write_text(json.dumps(data))
+    with pytest.raises(RuntimeError, match='unreadable'):
+        with DeliveryHistory(tmp_path, {}).locked():
+            pass
+
+
+def test_previous_history_without_first_attempt_field_remains_compatible(tmp_path):
+    state = DeliveryHistory(tmp_path, {})
+    state.complete_empty([], END.isoformat())
+    data = json.loads(state.path.read_text())
+    del data['first_attempt_start']
+    state.path.write_text(json.dumps(data))
+    with DeliveryHistory(tmp_path, {}).locked() as restored:
+        assert restored.window_start(END+timedelta(days=7), 7, 2, 90) == END-timedelta(days=2)
+
+
 def test_seen_includes_unselected_candidates_and_ignores_versions(tmp_path):
     state = DeliveryHistory(tmp_path, {})
     selected = make_sample_paper(url='https://arxiv.org/abs/2610.00001v1', published=END.isoformat())
@@ -136,11 +181,56 @@ def test_dry_run_writes_previews_without_smtp_marker_or_history_advancement(week
     executor.run()
     assert not marker.exists()
     assert executor.history.data['covered_until'] is None
+    assert executor.history.data['first_attempt_start'] is None
     assert not executor.history.path.exists()
     report = json.loads((tmp_path / 'report/report.json').read_text())
     assert report['status'] == 'preview_only'
     assert 'Paper 0' in (tmp_path / 'report/brief.html').read_text()
     assert 'https://arxiv.org/abs/' in (tmp_path / 'report/brief.txt').read_text()
+
+
+@pytest.mark.parametrize('failure_stage', ['retrieval', 'summary'])
+def test_first_failed_run_retries_missed_week_before_any_success(weekly_executor, monkeypatch, failure_stage):
+    config, tmp_path, end = weekly_executor
+    from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever
+    from zotero_arxiv_daily.protocol import Paper
+    class Clock(datetime):
+        current = end
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+    monkeypatch.setattr('zotero_arxiv_daily.executor.datetime', Clock)
+    windows, sent = [], []
+    def retrieve(self):
+        windows.append(self.window_start)
+        if len(windows) == 1 and failure_stage == 'retrieval':
+            raise RuntimeError('First retrieval failed')
+        self.window = {'start_utc': self.window_start.isoformat(),
+                       'end_utc_exclusive': Clock.current.isoformat(), 'count': 1}
+        return [make_sample_paper(url='https://arxiv.org/abs/2610.00001v1',
+                                 published=(end-timedelta(days=1)).isoformat())]
+    attempts = []
+    def summarize(self, client, params):
+        attempts.append(self.url)
+        if len(attempts) == 1 and failure_stage == 'summary':
+            raise RuntimeError('First summary failed')
+        return 'Validated summary'
+    monkeypatch.setattr(ArxivRetriever, 'retrieve_papers', retrieve)
+    monkeypatch.setattr(Paper, '_generate_tldr_with_llm', summarize)
+    monkeypatch.setattr('zotero_arxiv_daily.executor.send_email', lambda *a, **kw: sent.append(a))
+    with pytest.raises(RuntimeError):
+        Executor(config).run()
+    restored = Executor(config)
+    restored.history.load()
+    assert restored.history.data['covered_until'] is None
+    assert restored.history.data['first_attempt_start'] == (end-timedelta(days=7)).isoformat()
+    assert not sent
+    Clock.current = end + timedelta(days=7)
+    restored.run()
+    assert windows == [end-timedelta(days=7)] * 2
+    assert len(sent) == 1
+    assert restored.history.data['covered_until'] == Clock.current.isoformat()
+    assert restored.history.data['first_attempt_start'] is None
 
 
 @pytest.mark.parametrize('uncertain', [False, True])
