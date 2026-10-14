@@ -76,3 +76,31 @@ def test_get_block_html_contains_all_fields():
 def test_get_empty_html():
     html = get_empty_html()
     assert "本期暂无新增推荐" in html
+
+
+def test_readable_summary_preserves_validation_and_uncertainty():
+    from zotero_arxiv_daily.construct_email import html_to_text
+    raw = ('问题：研究目标[摘要确认]。\n方法：实验方法[摘要确认]。\n'
+           '结论：测量结果[摘要确认]。\n创新：尚无法确认。\n参考价值：可能有帮助[推测]。')
+    paper = make_sample_paper(tldr=raw)
+    html = render_email([paper])
+    text = html_to_text(html)
+    assert '[摘要确认]' not in text
+    assert text.count('内容来源：论文摘要') == 1
+    assert '（推测）' in text and '尚无法确认' in text
+    assert paper.tldr == raw
+
+
+def test_compact_citations_retain_correspondence_and_escape_body():
+    from zotero_arxiv_daily.construct_email import html_to_text
+    raw = '结论：<script>unsafe</script>[全文片段确认:E2]。\n参考价值：应用[摘要确认]。'
+    paper = make_sample_paper(tldr=raw)
+    paper.evidence_excerpts = [{'id':'E1','section':'Unused methods'},
+                              {'id':'E2','section':'<Results>'}]
+    assert paper.summary_is_acceptable(raw, {})
+    html = render_email([paper])
+    assert '<script>' not in html and '&lt;script&gt;' in html
+    assert '[全文片段确认:E2]' not in html and '[E2]' in html
+    assert 'Unused methods' not in html and '&lt;Results&gt;' in html
+    assert '论文摘要；正文片段' in html_to_text(html)
+    assert paper.tldr == raw and paper.summary_is_acceptable(paper.tldr, {})

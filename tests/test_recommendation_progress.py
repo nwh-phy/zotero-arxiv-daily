@@ -156,11 +156,11 @@ def test_checkpoint_revalidated_against_current_quality_rules(tmp_path):
 
 
 def test_email_explains_selection_and_escapes_reference_titles():
-    paper = make_sample_paper(score=9, tldr='Summary', recommendation_theme='20_主题/EELS',
+    paper = make_sample_paper(score=9, tldr='Summary[全文片段确认:E1]', recommendation_theme='20_主题/EELS',
                               related_papers=['<script>bad</script>'])
     paper.evidence_excerpts = [{'id': 'E1', 'section': '<Results>', 'text': 'measured result'}]
     html = render_email([paper])
-    assert '推荐依据' in html and '20_主题/EELS' in html and '输入片段' in html
+    assert '推荐依据' in html and '20_主题/EELS' in html and '内容来源' in html
     assert '<script>' not in html and '&lt;Results&gt;' in html
     assert '综合相关度' in html
 

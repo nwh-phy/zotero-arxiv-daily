@@ -1,5 +1,6 @@
 from .protocol import Paper
 import math
+import re
 from html import escape
 from html.parser import HTMLParser
 from collections import Counter
@@ -60,6 +61,27 @@ def get_empty_html():
   """
   return block_template
 
+
+def _summary_sources(summary, excerpts=()):
+    summary = summary or ''
+    sources = ['论文摘要'] if '[摘要确认]' in summary else []
+    ids = list(dict.fromkeys(re.findall(r'\[全文片段确认:(E\d+)\]', summary)))
+    if ids or '[全文片段确认]' in summary:
+        sections = {e['id']: e['section'] for e in excerpts}
+        details = '；'.join(f'[{ref}] {sections[ref]}' if ref in sections else f'[{ref}]' for ref in ids)
+        sources.append('正文片段' + (f'（{details}）' if details else ''))
+    return '；'.join(sources) or None
+
+
+def _summary_html(summary):
+    # Keep the validated original untouched; compact only the reader-facing text.
+    text = (summary or '').replace('[摘要确认]', '').replace('[全文片段确认]', '')
+    text = re.sub(r'\[全文片段确认:(E\d+)\]', r'[\1]', text)
+    text = text.replace('[推测]', '（推测）')
+    text = escape(text)
+    text = re.sub(r'(?m)^(问题|方法|结论|创新|参考价值)(\s*[:：])', r'<strong>\1\2</strong>', text)
+    return text.replace('\n', '<br>')
+
 def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affiliations:str=None, url:str=None, publication:str=None, recommendation:str=None, evidence:str=None, source_label:str="arXiv 原文"):
     block_template = """
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #ddd; border-radius: 8px; padding: 16px; background-color: #f9f9f9;">
@@ -99,12 +121,13 @@ def get_block_html(title:str, authors:str, rate:str, tldr:str, pdf_url:str, affi
 """
     def safe_url(value):
         return escape(value, quote=True) if value and value.startswith(('https://', 'http://')) else '#'
+    evidence = evidence or _summary_sources(tldr)
     return block_template.format(title=escape(title), authors=escape(authors), rate=rate, source_label=escape(source_label),
-                                 tldr=escape(tldr or '').replace('\n', '<br>'),
+                                 tldr=_summary_html(tldr),
                                  pdf_url=safe_url(pdf_url), url=safe_url(url),
                                  affiliations='<i>' + escape(affiliations) + '</i><br>' if affiliations else '', publication=escape(publication or ''),
                                  recommendation='<br><strong>推荐依据：</strong> ' + escape(recommendation) if recommendation else '',
-                                 evidence='<br><strong>输入片段：</strong> ' + escape(evidence) if evidence else '')
+                                 evidence='<div style="font-size:12px;color:#777;margin-top:10px;">内容来源：' + escape(evidence) + '</div>' if evidence else '')
 
 def get_stars(score:float):
     full_star = '<span class="full-star">⭐</span>'
@@ -157,7 +180,7 @@ def render_email(papers:list[Paper], context: dict | None = None) -> str:
         if p.related_papers:
             theme = f"主题：{p.recommendation_theme}；" if p.recommendation_theme else ''
             recommendation = theme + '相关收藏：' + '；'.join(p.related_papers)
-        evidence = '；'.join(f"{e['id']}：{e['section']}" for e in p.evidence_excerpts) or None
+        evidence = _summary_sources(p.tldr, p.evidence_excerpts)
         parts.append(get_block_html(p.title, authors, rate, p.tldr, p.pdf_url, affiliations, p.url, publication,
                                     recommendation, evidence, 'arXiv 原文' if p.source == 'arxiv' else '论文原文'))
 
