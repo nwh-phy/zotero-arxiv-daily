@@ -34,22 +34,34 @@ out.mkdir(exist_ok=True)
 results = {'verification_scope': {'status': 'INFO', 'detail': 'summary-only' if args.summary_only else 'full'}}
 failed = False
 
+def save_results():
+    path = out/'results.json'
+    temporary = out/'results.json.tmp'
+    temporary.write_text(json.dumps(results, ensure_ascii=False, indent=2))
+    temporary.replace(path)
+
+
 def check(name, fn):
     global failed
+    results[name] = {'status': 'RUNNING'}
+    save_results()
+    print(name + ': RUNNING', flush=True)
     try:
         detail = fn()
-        results[name] = {'status': 'PASS', 'detail': detail}
+        results[name] = detail if isinstance(detail, dict) and detail.get('status') == 'SKIP' else {'status': 'PASS', 'detail': detail}
     except Exception as exc:
         # External exceptions can embed headers, credentials or request bodies.
         results[name] = {'status': 'FAIL', 'error_type': type(exc).__name__}
         failed = True
-    print(name + ': ' + results[name]['status'])
+    save_results()
+    print(name + ': ' + results[name]['status'], flush=True)
 
 executor = Executor(config)
 corpus = []
 papers = []
 ranked = []
-candidate_origin = 'current RSS'
+candidate_origin = 'current configured arXiv window'
+raw_by_url = {}
 
 def zotero_check():
     global corpus
@@ -74,8 +86,9 @@ else:
     results['embedding'] = {'status': 'SKIP', 'reason': 'Unchanged; previously verified in full run'}
 
 def arxiv_check():
-    global papers
+    global papers, raw_by_url
     raw = ArxivRetriever(config)._retrieve_raw_papers()
+    raw_by_url = {p.entry_id: p for p in raw}
     papers = [Paper(source='arxiv', title=p.title, authors=[a.name for a in p.authors],
                     abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
                     published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
@@ -87,7 +100,7 @@ check('arxiv', arxiv_check)
 # Real older arXiv records exercise ranking/summary without inventing papers.
 if not papers:
     def historical_check():
-        global papers, candidate_origin
+        global papers, candidate_origin, raw_by_url
         query = ' OR '.join('cat:' + c for c in config.source.arxiv.category)
         url = 'https://export.arxiv.org/api/query?' + urllib.parse.urlencode({
             'search_query': query, 'max_results': 10, 'sortBy': 'submittedDate', 'sortOrder': 'descending'})
@@ -107,6 +120,7 @@ if not papers:
                         abstract=p.summary, url=p.entry_id, pdf_url=p.pdf_url,
                         published=p.published.isoformat(), journal_ref=p.journal_ref or None) for p in raw]
         assert papers, 'No historical records returned'
+        raw_by_url = {p.entry_id: p for p in raw}
         candidate_origin = 'historical arXiv API records (verification only)'
         return {'records': len(papers), 'production_fallback': False}
     check('historical_arxiv_sample', historical_check)
@@ -115,9 +129,11 @@ def ranking_check():
     global ranked
     ranked = executor.reranker.rerank(papers, corpus)[:config.executor.max_paper_num]
     assert 0 < len(ranked) <= 10
-    assert all(ranked[i].score >= ranked[i+1].score for i in range(len(ranked)-1))
+    assert all(ranked[i].selection_score >= ranked[i+1].selection_score for i in range(len(ranked)-1))
     return {'selected': len(ranked), 'candidate_origin': candidate_origin,
-            'descending_scores': [round(float(p.score), 4) for p in ranked]}
+            'relevance_scores': [round(float(p.score), 4) for p in ranked],
+            'selection_scores': [round(float(p.selection_score), 4) for p in ranked],
+            'themes': [p.recommendation_theme for p in ranked]}
 if papers and corpus:
     check('ranking', ranking_check)
 else:
@@ -153,6 +169,29 @@ if papers:
 else:
     results['chinese_summary_and_html'] = {'status': 'SKIP', 'reason': 'No live papers; no substitute invented'}
 
+# Verify section-aware extraction and summary provenance with one selected paper.
+# This never sends mail or updates production coverage/checkpoints.
+if papers:
+    def full_text_check():
+        from zotero_arxiv_daily.evidence import select_excerpts
+        selected = ranked[0] if ranked else papers[0]
+        raw = raw_by_url[selected.url]
+        enriched = ArxivRetriever(config).convert_to_paper(raw)
+        if not enriched.full_text or not select_excerpts(enriched.full_text):
+            return {'status': 'SKIP', 'reason': 'No usable full-text source; abstract-only behavior verified separately'}
+        summary = enriched.generate_tldr(executor.openai_client, params)
+        assert enriched.summary_is_acceptable(summary, params)
+        assert enriched.evidence_excerpts
+        (out/'fulltext-sample.txt').write_text(enriched.title+'\n'+enriched.url+'\n'+summary)
+        (out/'fulltext-sample.html').write_text(render_email([enriched]))
+        return {'source_url': enriched.url, 'sections': [
+            {'id': e['id'], 'section': e['section']} for e in enriched.evidence_excerpts],
+            'input_evidence': 'abstract plus selected body excerpts',
+            'full_text_citations': '全文片段确认:' in summary}
+    check('full_text_summary', full_text_check)
+else:
+    results['full_text_summary'] = {'status': 'SKIP', 'reason': 'No verification paper'}
+
 smtp_names = ['SENDER', 'RECEIVER', 'SENDER_PASSWORD', 'SMTP_SERVER']
 missing = [name for name in smtp_names if not os.environ.get(name)]
 if missing:
@@ -175,14 +214,14 @@ else:
 if args.send_test and not failed and results.get('smtp', {}).get('status') == 'PASS' and results.get('chinese_summary_and_html', {}).get('status') == 'PASS':
     def send_test_check():
         banner = '<p><strong>部署测试邮件</strong>：此邮件用于验证 Gmail 投递与中文简报显示。</p>'
-        if candidate_origin != 'current RSS':
+        if candidate_origin.startswith('historical'):
             banner += '<p>以下为真实历史 arXiv 样本，仅用于部署测试，不代表今日推荐。</p>'
         send_email(config, banner + (out/'sample.html').read_text(), subject='[部署测试] Zotero arXiv 中文文献简报')
         return {'smtp_accepted': True, 'inbox_confirmed': False, 'candidate_origin': candidate_origin}
     check('end_to_end_email', send_test_check)
 else:
     results['end_to_end_email'] = {'status': 'NOT_RUN', 'reason': 'Test sending not requested or prerequisites did not pass'}
-(out/'results.json').write_text(json.dumps(results, ensure_ascii=False, indent=2))
+save_results()
 summary = '\n'.join(f"- {name}: {r['status']}" for name,r in results.items())
 if step_summary := os.environ.get('GITHUB_STEP_SUMMARY'):
     with open(step_summary, 'a') as f:

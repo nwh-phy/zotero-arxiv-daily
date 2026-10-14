@@ -1,6 +1,11 @@
 name: Send weekly literature brief
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Generate a preview without email or advancing delivery coverage
+        type: boolean
+        default: false
   schedule:
     - cron: '15 0 * * 1'
 permissions:
@@ -10,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   calculate-and-send:
-    if: vars.DELIVERY_ENABLED == 'true'
+    if: vars.DELIVERY_ENABLED == 'true' || inputs.dry_run
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -30,17 +35,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: ${{ github.repository }}
-          ref: main
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
       - name: Apply non-sensitive configuration override
         env:
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
-        run: |
-          if [ -n "$CUSTOM_CONFIG" ]; then
-            printf '%s\n' "$CUSTOM_CONFIG" > config/custom.yaml
-          fi
+        run: uv run --frozen scripts/apply_config_override.py
       - name: Check required credentials
         run: uv run --frozen scripts/preflight.py
       - name: Beijing delivery date
@@ -53,22 +54,47 @@ jobs:
           path: .delivery
           key: literature-delivered-${{ github.repository_id }}-${{ steps.date.outputs.day }}
       - name: Cache Hugging Face model
-        if: steps.delivered.outputs.cache-hit != 'true'
+        if: inputs.dry_run || steps.delivered.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: /home/runner/.cache/huggingface
           key: hf-jina-v5-nano-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+      - name: Restore per-paper processing progress
+        if: inputs.dry_run || steps.delivered.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: .paper-progress
+          key: paper-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            paper-progress-v1-${{ github.repository_id }}-
       - name: Generate and send brief
-        if: steps.delivered.outputs.cache-hit != 'true'
+        id: process
+        if: inputs.dry_run || steps.delivered.outputs.cache-hit != 'true'
         env:
           DELIVERY_MARKER: .delivery/sent
-        run: uv run --frozen src/zotero_arxiv_daily/main.py
+        run: uv run --frozen src/zotero_arxiv_daily/main.py executor.dry_run=${{ inputs.dry_run && 'true' || 'false' }}
+      - name: Save per-paper progress including failed runs
+        if: always() && (steps.process.outcome == 'success' || steps.process.outcome == 'failure') && hashFiles('.paper-progress/**/*.json') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: .paper-progress
+          key: paper-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Remember SMTP acceptance
-        if: steps.delivered.outputs.cache-hit != 'true' && hashFiles('.delivery/sent') != ''
+        if: always() && !inputs.dry_run && steps.delivered.outputs.cache-hit != 'true' && hashFiles('.delivery/sent') != ''
         uses: actions/cache/save@v4
         with:
           path: .delivery
           key: literature-delivered-${{ github.repository_id }}-${{ steps.date.outputs.day }}
-      - name: Failure summary
-        if: failure()
-        run: echo 'Daily brief failed. Check the failed step; no credentials are printed. SMTP acceptance and cache persistence are separate operations.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Brief run summary
+        if: always()
+        run: uv run --frozen scripts/report_brief.py >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload brief verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-brief-report
+          path: verification/brief/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -6,6 +6,8 @@ zotero:
 
 source:
   arxiv:
+    overlap_days: 2 # Recheck recent coverage for delayed indexing
+    max_backfill_days: 90 # Fail explicitly rather than silently drop a longer gap
     category: null # The categories of target arxiv papers. Find the abbr of your research area from [here](https://arxiv.org/category_taxonomy). Example: ["cs.AI","cs.CV","cs.LG","cs.CL"]
     include_cross_list: false # Whether to include arXiv cross-list papers in subscribed categories. Example: true
   biorxiv:
@@ -34,6 +36,14 @@ llm:
   language: English # Preferred language for the TL;DR. Example: English
 
 reranker:
+  ranking:
+    mode: legacy # legacy or theme_balanced
+    theme_path_depth: 2
+    neighbors_per_theme: 3
+    recency_half_life_days: 180
+    theme_penalty: 0.04
+    diversity_weight: 0.15
+    duplicate_similarity_threshold: 0.85
   local:
     model: jinaai/jina-embeddings-v5-text-nano-retrieval # The Hugging Face model name of the local embedding model. Example: jinaai/jina-embeddings-v5-text-nano
     encode_kwargs:
@@ -47,6 +57,10 @@ reranker:
     batch_size: null # The batch size for embedding API requests. Adjust to match your provider's limit. Example: 64
 
 executor:
+  history_enabled: false # Coverage and deduplication for weekly arXiv retrieval
+  dry_run: false # Render artifacts without SMTP or advancing delivery coverage
+  output_dir: verification/brief
+  progress_dir: null # Optional persistent per-paper extraction and summary cache
   debug: false # Whether to use debug mode. Example: true
   send_empty: false # Whether to send an empty email even if no new papers today. Example: true
   max_paper_num: 100 # The maximum number of the papers presented in the email. Example: 100

@@ -1,0 +1,61 @@
+name: Reconcile uncertain literature delivery
+on:
+  workflow_dispatch:
+    inputs:
+      outcome:
+        description: Inspect first; change outcome only after checking SMTP or inbox evidence
+        type: choice
+        options: [inspect, accepted, not-accepted]
+        default: inspect
+      batch_id:
+        description: Exact pending batch ID; required for changing history
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: daily-literature-delivery
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ZOTERO_ID: ${{ secrets.ZOTERO_ID }}
+      ZOTERO_KEY: ${{ secrets.ZOTERO_KEY }}
+      SENDER: ${{ secrets.SENDER }}
+      RECEIVER: ${{ secrets.RECEIVER }}
+      SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+      SMTP_SERVER: ${{ vars.SMTP_SERVER }}
+      SMTP_PORT: ${{ vars.SMTP_PORT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Apply configuration override
+        env:
+          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+        run: uv run --frozen scripts/apply_config_override.py
+      - name: Restore delivery history
+        id: history
+        uses: actions/cache/restore@v4
+        with:
+          path: .paper-progress
+          key: paper-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            paper-progress-v1-${{ github.repository_id }}-
+      - name: Inspect or reconcile exact pending batch
+        env:
+          OUTCOME: ${{ inputs.outcome }}
+          BATCH_ID: ${{ inputs.batch_id }}
+        run: |
+          uv run --frozen scripts/reconcile_delivery.py --outcome "$OUTCOME" --batch-id "$BATCH_ID"
+      - name: Save reconciled history
+        if: inputs.outcome != 'inspect'
+        uses: actions/cache/save@v4
+        with:
+          path: .paper-progress
+          key: paper-progress-v1-${{ github.repository_id }}-${{ github.run_id }}-${{ github.run_attempt }}

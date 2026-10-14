@@ -165,7 +165,7 @@ def test_send_email_rejects_plaintext(config, monkeypatch):
         raise OSError('SSL unavailable')
     monkeypatch.setattr(smtplib, 'SMTP', NoTLS)
     monkeypatch.setattr(smtplib, 'SMTP_SSL', no_ssl)
-    with pytest.raises(OSError, match='SSL unavailable'):
+    with pytest.raises(OSError, match='SMTP connection or TLS failed'):
         send_email(config, '<html>secure only</html>')
     assert calls == ['SMTP']
 
@@ -272,3 +272,28 @@ class TestBm25Pick:
         candidates = {"a.tex": "hello", "b.tex": "world"}
         result = _bm25_pick("", candidates)
         assert result in candidates
+
+
+def test_nested_input_include_and_relative_source_paths(make_tar):
+    path = make_tar({
+        'paper/main.tex': '\\begin{document}\n\\include{sections/results}\n\\end{document}',
+        'paper/main.bbl': '',
+        'paper/sections/results.tex': '\\section{Results}\n\\input{figures/analysis}',
+        'paper/figures/analysis.tex': 'Confirmed signal rose by 50\\% in the measured sample.',
+    })
+    result = extract_tex_code_from_tar(path, 'test-paper')
+    assert 'Confirmed signal rose by 50\\%' in result['all']
+    assert '\\include{sections/results}' not in result['all']
+
+
+def test_cyclic_tex_includes_fail_for_fallback_instead_of_hanging(make_tar):
+    path = make_tar({'main.tex': '\\begin{document}\n\\input{a}\n\\end{document}',
+                     'main.bbl': '', 'a.tex': '\\input{main}'})
+    with pytest.raises(ValueError, match='Cyclic'):
+        extract_tex_code_from_tar(path, 'test-paper')
+
+
+def test_tex_comments_do_not_remove_escaped_percent_results(make_tar):
+    path = make_tar({'main.tex': '\\begin{document}\n50\\% improvement % omit comment\n\\end{document}'})
+    text = extract_tex_code_from_tar(path, 'test-paper')['all']
+    assert '50\\% improvement' in text and 'omit comment' not in text
