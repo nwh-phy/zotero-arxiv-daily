@@ -122,6 +122,57 @@ def test_future_and_overlong_coverage_gaps_fail_explicitly(tmp_path):
         state.window_start(END, 7, 2, 90)
 
 
+def _legacy_history(tmp_path, name, covered=None, seen=None, pending=None):
+    data = {'schema': 1, 'covered_until': covered, 'first_attempt_start': None,
+            'seen': seen or {}, 'pending': pending}
+    (tmp_path / f'history-{name}.json').write_text(json.dumps(data))
+
+
+def test_histories_from_earlier_collection_scopes_are_merged_once(tmp_path):
+    # Two collection scopes delivered the same week (the 2026-10-19 duplicate brief).
+    _legacy_history(tmp_path, 'old', (END - timedelta(days=7)).isoformat(), {'arxiv:2610.00001': END.isoformat()})
+    _legacy_history(tmp_path, 'new', END.isoformat(), {'arxiv:2610.00002': END.isoformat()})
+    delivered = [make_sample_paper(url=f'https://arxiv.org/abs/2610.0000{i}v1') for i in (1, 2)]
+    fresh = make_sample_paper(url='https://arxiv.org/abs/2610.00003v1')
+    with DeliveryHistory(tmp_path, {'categories': ['physics.optics']}).locked() as state:
+        assert state.window_start(END + timedelta(days=7), 7, 2, 90) == END - timedelta(days=2)
+        assert state.unseen([*delivered, fresh]) == [fresh]
+        assert not state.path.exists()  # Adoption alone writes nothing, e.g. for a dry run.
+        state.complete_empty([fresh], (END + timedelta(days=7)).isoformat())
+    _legacy_history(tmp_path, 'new', END.isoformat())  # Ignored once the merged history exists.
+    with DeliveryHistory(tmp_path, {'categories': ['physics.optics']}).locked() as restored:
+        assert restored.unseen([*delivered, fresh]) == []
+
+
+def test_uncertain_or_unreadable_earlier_history_blocks_adoption(tmp_path):
+    pending = {'status': 'sending', 'batch_id': 'abc', 'end': END.isoformat(), 'seen': {}}
+    _legacy_history(tmp_path, 'a', END.isoformat(), pending=pending)
+    with DeliveryHistory(tmp_path, {}).locked() as state:
+        with pytest.raises(RuntimeError, match='uncertain SMTP outcome'):
+            state.assert_ready()
+        assert state.data['pending']['batch_id'] == 'abc'  # Reconcilable by its exact batch ID.
+    _legacy_history(tmp_path, 'b', END.isoformat(), pending={**pending, 'batch_id': 'def'})
+    with pytest.raises(RuntimeError, match='Several earlier histories'):
+        with DeliveryHistory(tmp_path, {}).locked():
+            pass
+    (tmp_path / 'history-b.json').write_text('broken json')
+    with pytest.raises(RuntimeError, match='unreadable'):
+        with DeliveryHistory(tmp_path, {}).locked():
+            pass
+
+
+def test_collection_changes_keep_the_same_delivery_history(weekly_executor):
+    config, _, _ = weekly_executor
+    before = Executor(config).history.path
+    with open_dict(config):
+        config.zotero.include_path = ['2026/other/**']
+        config.zotero.ignore_path = ['archive/**']
+    assert Executor(config).history.path == before
+    with open_dict(config):
+        config.source.arxiv.category = ['physics.optics']
+    assert Executor(config).history.path != before
+
+
 def test_local_lock_prevents_parallel_delivery(tmp_path):
     with DeliveryHistory(tmp_path, {}).locked():
         with pytest.raises(RuntimeError, match='Another literature delivery'):

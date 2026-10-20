@@ -72,11 +72,10 @@ class Executor:
                 or list(config.executor.source) != ['arxiv']
                 or not config.source.arxiv.get('lookback_days', 0)):
             raise ValueError('Delivery history requires progress_dir and weekly arXiv-only retrieval')
+        # Zotero collections only change ranking, not which papers were already evaluated.
         scope = {'receiver': config.email.receiver,
                  'categories': sorted(config.source.arxiv.category or []),
-                 'cross_list': config.source.arxiv.get('include_cross_list', False),
-                 'include': sorted(self.include_path_patterns or []),
-                 'ignore': sorted(self.ignore_path_patterns or [])}
+                 'cross_list': config.source.arxiv.get('include_cross_list', False)}
         self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope)
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:

@@ -16,6 +16,9 @@ from urllib.parse import urlparse
 
 HISTORY_VERSION = 1
 HISTORY_RETENTION_DAYS = 120
+HISTORY_PREFIX = 'delivery-history-'
+# Earlier histories were also keyed by Zotero include/ignore paths.
+LEGACY_PREFIX = 'history-'
 
 
 def paper_identity(paper):
@@ -37,7 +40,7 @@ class DeliveryHistory:
     def __init__(self, directory, scope):
         namespace = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
         self.namespace = namespace
-        self.path = Path(directory) / ('history-' + namespace + '.json') if directory else None
+        self.path = Path(directory) / (HISTORY_PREFIX + namespace + '.json') if directory else None
         self.data = {'schema': HISTORY_VERSION, 'covered_until': None,
                      'first_attempt_start': None, 'seen': {}, 'pending': None}
 
@@ -62,10 +65,36 @@ class DeliveryHistory:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def load(self):
-        if self.path is None or not self.path.exists():
+        if self.path is None:
             return
+        if self.path.exists():
+            self.data = self._read(self.path)
+        else:
+            self._adopt_legacy()
+
+    def _adopt_legacy(self):
+        # Merge histories keyed by earlier collection scopes, so changing include_path
+        # neither re-sends evaluated papers nor drops the overlap window. Saved on next write.
+        legacy = [self._read(path) for path in sorted(self.path.parent.glob(LEGACY_PREFIX + '*.json'))]
+        if not legacy:
+            return
+        pending = [data['pending'] for data in legacy if data.get('pending')]
+        if len(pending) > 1:
+            raise RuntimeError('Several earlier histories have uncertain deliveries; reconcile them before sending')
+        covered = [utc_date(data['covered_until']) for data in legacy if data.get('covered_until')]
+        attempts = [utc_date(data['first_attempt_start']) for data in legacy if data.get('first_attempt_start')]
+        seen = {}
+        for data in legacy:
+            seen.update(data['seen'])
+        self.data = {'schema': HISTORY_VERSION,
+                     'covered_until': max(covered).isoformat() if covered else None,
+                     'first_attempt_start': None if covered or not attempts else min(attempts).isoformat(),
+                     'seen': seen, 'pending': pending[0] if pending else None}
+
+    @staticmethod
+    def _read(path):
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(path.read_text())
             if (not isinstance(data, dict) or data.get('schema') != HISTORY_VERSION
                     or 'covered_until' not in data or 'pending' not in data
                     or not isinstance(data.get('seen'), dict)
@@ -90,7 +119,7 @@ class DeliveryHistory:
                     if not isinstance(key, str):
                         raise ValueError('Invalid pending paper ID')
                     utc_date(date)
-            self.data = data
+            return data
         except (OSError, ValueError, TypeError, KeyError):
             raise RuntimeError('Delivery history is unreadable; restore or reconcile it before sending') from None
 
