@@ -328,4 +328,4 @@ def test_weekly_window_gives_up_after_bounded_throttled_attempts(config, monkeyp
     retriever = _weekly_retriever(config, monkeypatch, responses, sleeps)
     with pytest.raises(arxiv_retriever.requests.HTTPError):
         retriever.retrieve_papers()
-    assert sleeps == [30, 60, 120, 240, 300]
+    assert sleeps == [30, 60, 120, 240, 480, 600, 600, 600, 600]
