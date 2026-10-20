@@ -68,6 +68,16 @@ def test_filter_corpus_matches_any_path_against_any_pattern():
     assert [p.title for p in filtered] == ["Survey Paper", "Reading Group Paper"]
 
 
+def test_filter_corpus_limits_theme_paths_to_included_collections():
+    executor = _make_executor(include_patterns=["2026/survey", "2026/survey/**"])
+    paper = CorpusPaper(title="Shared Paper", abstract="", added_date=datetime(2026, 1, 1),
+                        paths=["2026/thesis", "2026/survey", "2026/survey/topic-a", "2026"])
+    [filtered] = executor.filter_corpus([paper])
+    assert filtered.theme_paths == ["2026/survey", "2026/survey/topic-a"]
+    assert filtered.paths == paper.paths  # Original memberships stay traceable.
+    assert paper.theme_paths is None  # The fetched corpus is not mutated.
+
+
 def test_filter_corpus_excludes_papers_matching_ignore_path():
     executor = _make_executor(ignore_patterns=["archive/**", "2025/**"])
     corpus = [

@@ -38,6 +38,26 @@ def test_minority_theme_not_diluted_by_large_collection():
     assert ranked[0].related_papers == ['Minority reference']
 
 
+def test_themes_only_come_from_included_collections():
+    date = datetime(2026, 1, 1)
+    executor = Executor.__new__(Executor)
+    executor.include_path_patterns = ['20_主题/q-EELS', '20_主题/q-EELS/**']
+    executor.ignore_path_patterns = None
+    corpus = [CorpusPaper(f'EELS {i}', f'EELS {i}', date, ['20_主题/q-EELS']) for i in range(3)]
+    # A reference also filed in an excluded thesis folder and the bare root collection.
+    corpus.append(CorpusPaper('Shared', 'Shared', date, ['20_主题/q-EELS/声子', '10_项目/本科毕设', '20_主题']))
+    corpus.append(CorpusPaper('Excluded', 'Excluded', date, ['10_项目/本科毕设']))
+    corpus = executor.filter_corpus(corpus)
+    assert [p.title for p in corpus] == ['EELS 0', 'EELS 1', 'EELS 2', 'Shared']
+    sim = np.array([[.2, .2, .2, .9], [.6, .6, .6, .1]])
+    papers = [make_sample_paper(title='Off-topic'), make_sample_paper(title='On-topic')]
+    ranked = MatrixReranker(sim).rerank(papers, corpus)
+    assert {p.recommendation_theme for p in ranked} == {'20_主题/q-EELS'}
+    # Without the bare root theme, one shared reference no longer outranks consistent matches.
+    assert [p.title for p in ranked] == ['On-topic', 'Off-topic']
+    assert ranked[1].score == pytest.approx((.9 + .2 + .2) / 3 * 10)
+
+
 def test_decay_depends_on_elapsed_days_not_library_position():
     date = datetime(2026, 1, 1)
     def score(gap):

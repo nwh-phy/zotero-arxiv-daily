@@ -199,3 +199,5 @@ class CorpusPaper:
     abstract: str
     added_date: datetime
     paths: list[str]
+    # Collections selected by include_path; None means every path is in scope.
+    theme_paths: Optional[list[str]] = None

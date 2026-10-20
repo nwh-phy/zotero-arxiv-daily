@@ -4,6 +4,7 @@ from omegaconf import DictConfig, ListConfig
 from .utils import glob_match
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 import json
@@ -86,13 +87,14 @@ class Executor:
     def filter_corpus(self, corpus:list[CorpusPaper]) -> list[CorpusPaper]:
         if self.include_path_patterns:
             logger.info(f"Selecting zotero papers matching include_path: {self.include_path_patterns}")
+            # Keep every collection for traceability, but rank themes only within included ones.
             corpus = [
-                c for c in corpus
-                if any(
-                    glob_match(path, pattern)
-                    for path in c.paths
-                    for pattern in self.include_path_patterns
-                )
+                replace(c, theme_paths=matched)
+                for c in corpus
+                if (matched := [
+                    path for path in c.paths
+                    if any(glob_match(path, pattern) for pattern in self.include_path_patterns)
+                ])
             ]
         if self.ignore_path_patterns:
             logger.info(f"Excluding zotero papers matching ignore_path: {self.ignore_path_patterns}")
