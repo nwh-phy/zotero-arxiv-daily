@@ -48,6 +48,11 @@ def plain_title(title: str) -> str:
     return unescape(re.sub(r'\s+', ' ', _MARKUP_TAG.sub('', text))).strip()
 
 
+def original_abstract(abstract: str) -> str:
+    # A Zotero translation plugin appends "\n\n【摘要翻译】..."; embed only the original abstract.
+    return abstract.split('【摘要翻译】', 1)[0].strip() or abstract
+
+
 class Executor:
     def __init__(self, config:DictConfig):
         self.config = config
@@ -92,7 +97,7 @@ class Executor:
         logger.info(f"Fetched {len(corpus)} zotero papers")
         return [CorpusPaper(
             title=plain_title(c['data']['title']),
-            abstract=c['data']['abstractNote'],
+            abstract=original_abstract(c['data']['abstractNote']),
             added_date=datetime.strptime(c['data']['dateAdded'], '%Y-%m-%dT%H:%M:%SZ'),
             paths=c['paths']
         ) for c in corpus]

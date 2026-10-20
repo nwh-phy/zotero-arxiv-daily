@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily.executor import Executor, normalize_path_patterns, plain_title
+from zotero_arxiv_daily.executor import Executor, normalize_path_patterns, original_abstract, plain_title
 from zotero_arxiv_daily.protocol import CorpusPaper
 
 
@@ -56,6 +56,15 @@ def test_normalize_path_patterns_accepts_none():
 ])
 def test_plain_title_removes_publisher_markup(raw, expected):
     assert plain_title(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('Plasmons in TaS2 are slow.\n\n【摘要翻译】TaS2中的等离激元很慢。', 'Plasmons in TaS2 are slow.'),
+    ('No translation appended.', 'No translation appended.'),
+    ('【摘要翻译】只有译文。', '【摘要翻译】只有译文。'),
+])
+def test_original_abstract_drops_appended_translation(raw, expected):
+    assert original_abstract(raw) == expected
 
 
 # ---------------------------------------------------------------------------
