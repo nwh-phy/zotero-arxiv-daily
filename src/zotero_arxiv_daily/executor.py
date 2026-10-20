@@ -38,12 +38,14 @@ def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key:
 
 
 _MARKUP_TAG = re.compile(r'</?[A-Za-z][\w:.-]*(?:\s[^<>]*)?/?>')
+_MATHML = re.compile(r'<(?:mml:)?math\b.*?</(?:mml:)?math>', re.DOTALL)
 
 
 def plain_title(title: str) -> str:
     # Zotero keeps publisher markup (MathML, <sub>, <i>) in titles; emails need readable text.
-    text = _MARKUP_TAG.sub('', re.sub(r'>\s+<', '><', title))
-    return unescape(re.sub(r'\s+', ' ', text)).strip()
+    # Whitespace between MathML tags is layout, unlike the space in "<i>a</i> <i>b</i>".
+    text = _MATHML.sub(lambda match: re.sub(r'>\s+<', '><', match.group(0)), title)
+    return unescape(re.sub(r'\s+', ' ', _MARKUP_TAG.sub('', text))).strip()
 
 
 class Executor:

@@ -52,6 +52,7 @@ def test_normalize_path_patterns_accepts_none():
      'Tunable Interband Transitions in Twisted h−BN Heterostructures'),
     ('Oscillator Strength Crossover in Two-Dimensional PtSe<sub>2</sub>', 'Oscillator Strength Crossover in Two-Dimensional PtSe2'),
     ('Phonons at T < 1 K &amp; above', 'Phonons at T < 1 K & above'),
+    ('Spin <i>and</i> <i>orbital</i> moments', 'Spin and orbital moments'),
 ])
 def test_plain_title_removes_publisher_markup(raw, expected):
     assert plain_title(raw) == expected
