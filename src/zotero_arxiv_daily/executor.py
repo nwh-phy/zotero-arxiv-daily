@@ -18,7 +18,8 @@ from .utils import send_email, EmailDeliveryError
 from openai import OpenAI
 from tqdm import tqdm
 from .progress import PaperProgress
-from .history import DeliveryHistory
+from .history import DeliveryHistory, paper_identity
+from .relevance import select as select_relevant
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -46,6 +47,19 @@ def plain_title(title: str) -> str:
     # Whitespace between MathML tags is layout, unlike the space in "<i>a</i> <i>b</i>".
     text = _MATHML.sub(lambda match: re.sub(r'>\s+<', '><', match.group(0)), title)
     return unescape(re.sub(r'\s+', ' ', _MARKUP_TAG.sub('', text))).strip()
+
+
+_ARXIV_REFERENCE = re.compile(r'arxiv[^0-9]{0,20}(\d{4}\.\d{4,5})', re.IGNORECASE)
+
+
+def title_key(title: str) -> str:
+    return 'title:' + re.sub(r'[\W_]+', '', plain_title(title).lower())
+
+
+def library_identifiers(data: dict) -> set[str]:
+    # A delivered paper may be saved as the arXiv preprint or later under its journal title.
+    text = ' '.join(str(data.get(field) or '') for field in ('url', 'DOI', 'extra', 'archiveID'))
+    return {title_key(data.get('title') or '')} | {'arxiv:' + found for found in _ARXIV_REFERENCE.findall(text)}
 
 
 def original_abstract(abstract: str) -> str:
@@ -77,6 +91,7 @@ class Executor:
                  'categories': sorted(config.source.arxiv.category or []),
                  'cross_list': config.source.arxiv.get('include_cross_list', False)}
         self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope)
+        self.library_ids = set()
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
         logger.info("Fetching zotero corpus")
@@ -84,6 +99,7 @@ class Executor:
         collections = zot.everything(zot.collections())
         collections = {c['key']:c for c in collections}
         corpus = zot.everything(zot.items(itemType='conferencePaper || journalArticle || preprint'))
+        self.library_ids = set().union(*(library_identifiers(c['data']) for c in corpus))
         corpus = [c for c in corpus if c['data']['abstractNote'] != '']
         def get_collection_path(col_key:str) -> str:
             if p := collections[col_key]['data']['parentCollection']:
@@ -168,7 +184,8 @@ class Executor:
             corpus = self.filter_corpus(self.fetch_zotero_corpus())
             if not corpus:
                 raise RuntimeError('No Zotero papers with abstracts match the configured collections.')
-            ranked = self.reranker.rerank(candidates, corpus)[:self.config.executor.max_paper_num]
+            report['previous_delivery'] = self._previous_delivery()
+            ranked = self._select(self.reranker.rerank(candidates, corpus), report)
             report['selected_count'] = len(ranked)
             report['corpus_count'] = len(corpus)
             for paper in tqdm(ranked):
@@ -198,16 +215,18 @@ class Executor:
             if self.config.llm.get('strict_summary', False) and any(
                     not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
                 raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
-        elif not self.config.executor.send_empty:
+        if not ranked and not self.config.executor.send_empty:
+            # Candidates judged irrelevant were still evaluated, so coverage advances.
             if self.history_enabled and not dry_run:
                 self.history.complete_empty(all_papers, coverage_end)
-            report['status'] = 'no_new_candidates'
+            report['status'] = 'no_relevant_candidates' if candidates else 'no_new_candidates'
             self._write_report(report, started)
-            logger.info('No new candidates. No email will be sent.')
+            logger.info('No paper to recommend. No email will be sent.')
             return
         html = render_email(ranked, report)
         report['papers'] = [{'title': p.title, 'url': p.url, 'score': p.score,
                              'selection_score': p.selection_score, 'theme': p.recommendation_theme,
+                             'relevance_score': p.relevance_score, 'relevance_reason': p.relevance_reason,
                              'evidence_sections': [{'id': e['id'], 'section': e['section']} for e in p.evidence_excerpts]}
                             for p in ranked]
         if dry_run:
@@ -251,6 +270,28 @@ class Executor:
         report['status'] = 'smtp_accepted'
         self._write_report(report, started, html)
         logger.info('SMTP accepted the brief; recipient inbox arrival remains unverified')
+
+    def _select(self, ranked, report):
+        limit = int(self.config.executor.max_paper_num)
+        options = self.config.reranker.get('relevance') or {}
+        if options.get('enabled', False):
+            selected, report['relevance'] = select_relevant(ranked, self.openai_client, self.config.llm, options, limit)
+        else:
+            selected = ranked[:limit]
+        chosen = {id(p) for p in selected}
+        # Every ranked candidate is archived so ranking changes can be compared offline.
+        report['candidates'] = [{'id': paper_identity(p), 'title': p.title, 'score': p.score,
+                                 'theme': p.recommendation_theme, 'relevance_score': p.relevance_score,
+                                 'relevance_reason': p.relevance_reason, 'selected': id(p) in chosen}
+                                for p in ranked]
+        return selected
+
+    def _previous_delivery(self):
+        last = self.history.data.get('last_delivery') if self.history_enabled else None
+        if not last:
+            return None
+        saved = [p for p in last['papers'] if p['id'] in self.library_ids or title_key(p['title']) in self.library_ids]
+        return {'end_utc_exclusive': last['end'], 'delivered': len(last['papers']), 'saved': len(saved)}
 
     def _write_report(self, report, started, html=None):
         report['duration_seconds'] = round(monotonic() - started, 2)

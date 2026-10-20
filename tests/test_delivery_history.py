@@ -161,6 +161,21 @@ def test_uncertain_or_unreadable_earlier_history_blocks_adoption(tmp_path):
             pass
 
 
+def test_accepted_delivery_records_papers_and_rejects_malformed_record(tmp_path):
+    state = DeliveryHistory(tmp_path, {})
+    paper = make_sample_paper(title='Delivered', url='https://arxiv.org/abs/2610.00001v1')
+    state.begin([paper], [paper], END.isoformat())
+    state.accepted()
+    assert state.data['last_delivery'] == {'end': END.isoformat(),
+                                           'papers': [{'id': 'arxiv:2610.00001', 'title': 'Delivered'}]}
+    data = json.loads(state.path.read_text())
+    data['last_delivery']['papers'] = [{'id': 1}]
+    state.path.write_text(json.dumps(data))
+    with pytest.raises(RuntimeError, match='unreadable'):
+        with DeliveryHistory(tmp_path, {}).locked():
+            pass
+
+
 def test_collection_changes_keep_the_same_delivery_history(weekly_executor):
     config, _, _ = weekly_executor
     before = Executor(config).history.path

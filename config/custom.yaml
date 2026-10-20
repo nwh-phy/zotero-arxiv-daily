@@ -61,6 +61,17 @@ source:
 reranker:
   ranking:
     mode: theme_balanced
+  relevance:
+    enabled: true
+    top_k: 30
+    min_score: 3
+    profile: >-
+      实验凝聚态物理与先进电子显微学研究者。核心方向：用单色化 STEM-EELS 与动量分辨 EELS（q-EELS、4D-EELS）测量低能集体激发及其色散，
+      包括等离激元、声子、激子以及声子/等离激元极化激元；振动 EELS、界面与缺陷处的局域声子、纳米声子学与界面热输运；
+      二维金属与低维量子材料中的集体激发和电子-声子耦合；电荷密度波；手性声子与拓扑声子；EELS 去背景与谱学数据的智能分析；
+      电子非弹性散射与电镜理论；原位电镜与液氦低温电镜。
+      高价值：新的谱学或电镜方法，以及在上述体系中测量或计算集体激发、色散与电子-声子耦合的工作；ARPES、拉曼、光学等其他谱学得到的相关集体激发结果也有参考价值。
+      低价值：与这些物理问题无关的器件工艺、材料生长优化、冷原子与原子光学、生物或化学合成，以及仅把电镜当作常规表征手段的工作。
   local:
     model: jinaai/jina-embeddings-v5-text-nano-retrieval
     device: cpu
