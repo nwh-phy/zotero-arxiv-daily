@@ -3,9 +3,14 @@ import re
 
 import tiktoken
 
-EVIDENCE_VERSION = 1
+EVIDENCE_VERSION = 2
 
-_TEX_HEADING = re.compile(r"\\(?:sub)*section\*?(?:\[[^\]]*\])?\{([^{}]+)\}")
+# Headings such as \section{\label{sec:x}Results} or \section{MoS$_{2}$} nest braces two levels deep.
+_TEX_HEADING = re.compile(r"\\(?:sub)*section\*?(?:\[[^\]]*\])?\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})+)\}")
+_TEX_LABEL = re.compile(r"\\label\{[^{}]*\}")
+_BACK_MATTER = ("reference", "bibliograph", "acknowledg", "data availability", "author declaration",
+                "author contribution", "contributed equally", "competing interest", "conflict of interest",
+                "conflicts of interest", "funding")
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 _PLAIN_HEADING = re.compile(
     r"^\s*(?:\d+(?:\.\d+)*[.)]?\s+)?"
@@ -17,7 +22,7 @@ _PLAIN_HEADING = re.compile(
 
 def _priority(heading):
     heading = heading.lower()
-    if any(word in heading for word in ("reference", "bibliograph", "acknowledg")):
+    if any(word in heading for word in _BACK_MATTER):
         return None
     if any(word in heading for word in ("conclusion", "summary")):
         return 0
@@ -45,7 +50,7 @@ def select_excerpts(text: str, token_budget: int = 2600) -> list[dict[str, str]]
     )
     sections = []
     for i, match in enumerate(matches):
-        heading = match.group(1).strip()
+        heading = _TEX_LABEL.sub("", match.group(1)).strip()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         body = text[match.end():end].strip()
         priority = _priority(heading)

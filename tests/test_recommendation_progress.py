@@ -109,6 +109,21 @@ def test_markdown_and_plain_text_sections(text):
     assert [e['section'] for e in excerpts] == ['Conclusion', 'Results', 'Methods']
 
 
+def test_tex_headings_with_nested_braces_and_back_matter_exclusion():
+    text = ('\\begin{document}\n\\section{\\label{sec:level1}Introduction} BACKGROUND'
+            '\n\\section{\\label{sec:level2}Experimental methods} PAMBE_GROWTH'
+            '\n\\section{Results for AlN/Si(111) at $T_{\\rm sub}$} OBSERVED_POLARITY'
+            '\n\\section{Conclusion\\label{sec:conclusion}} FINAL_TRADEOFF'
+            '\n\\section*{Author Declarations} CONFLICT_STATEMENT'
+            '\n\\section*{Data Availability} DATA_STATEMENT')
+    excerpts = select_excerpts(text)
+    assert [e['section'] for e in excerpts] == [
+        'Conclusion', 'Results for AlN/Si(111) at $T_{\\rm sub}$', 'Experimental methods', 'Introduction']
+    supplied = ' '.join(e['text'] for e in excerpts)
+    assert all(marker in supplied for marker in ['PAMBE_GROWTH', 'OBSERVED_POLARITY', 'FINAL_TRADEOFF'])
+    assert 'CONFLICT_STATEMENT' not in supplied and 'DATA_STATEMENT' not in supplied
+
+
 def test_unstructured_text_includes_end_and_reference_only_has_no_evidence():
     prompt = build_summary_prompt(make_sample_paper(full_text='START ' + 'word ' * 10000 + ' END_RESULT'), 'English')
     assert 'END_RESULT' in prompt
