@@ -6,9 +6,11 @@ from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
 from dataclasses import replace
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 import json
 import os
+import re
 from time import monotonic
 from .reranker import get_reranker_cls
 from .construct_email import render_email, html_to_text
@@ -33,6 +35,15 @@ def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key:
         raise TypeError(f"config.zotero.{config_key} must contain only glob pattern strings.")
 
     return list(patterns)
+
+
+_MARKUP_TAG = re.compile(r'</?[A-Za-z][\w:.-]*(?:\s[^<>]*)?/?>')
+
+
+def plain_title(title: str) -> str:
+    # Zotero keeps publisher markup (MathML, <sub>, <i>) in titles; emails need readable text.
+    text = _MARKUP_TAG.sub('', re.sub(r'>\s+<', '><', title))
+    return unescape(re.sub(r'\s+', ' ', text)).strip()
 
 
 class Executor:
@@ -78,7 +89,7 @@ class Executor:
             c['paths'] = paths
         logger.info(f"Fetched {len(corpus)} zotero papers")
         return [CorpusPaper(
-            title=c['data']['title'],
+            title=plain_title(c['data']['title']),
             abstract=c['data']['abstractNote'],
             added_date=datetime.strptime(c['data']['dateAdded'], '%Y-%m-%dT%H:%M:%SZ'),
             paths=c['paths']

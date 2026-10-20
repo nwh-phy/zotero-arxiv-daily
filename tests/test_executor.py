@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily.executor import Executor, normalize_path_patterns
+from zotero_arxiv_daily.executor import Executor, normalize_path_patterns, plain_title
 from zotero_arxiv_daily.protocol import CorpusPaper
 
 
@@ -43,6 +43,18 @@ def test_normalize_path_patterns_accepts_empty_list():
 
 def test_normalize_path_patterns_accepts_none():
     assert normalize_path_patterns(None, "include_path") is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('Tunable Interband Transitions in Twisted\n    <mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML" display="inline">\n'
+     '      <mml:mrow>\n        <mml:mi>h</mml:mi>\n        <mml:mtext>−</mml:mtext>\n        <mml:mi>BN</mml:mi>\n'
+     '      </mml:mrow>\n    </mml:math>\n    Heterostructures',
+     'Tunable Interband Transitions in Twisted h−BN Heterostructures'),
+    ('Oscillator Strength Crossover in Two-Dimensional PtSe<sub>2</sub>', 'Oscillator Strength Crossover in Two-Dimensional PtSe2'),
+    ('Phonons at T < 1 K &amp; above', 'Phonons at T < 1 K & above'),
+])
+def test_plain_title_removes_publisher_markup(raw, expected):
+    assert plain_title(raw) == expected
 
 
 # ---------------------------------------------------------------------------
