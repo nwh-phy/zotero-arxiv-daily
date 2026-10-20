@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 from omegaconf import OmegaConf
 
-from zotero_arxiv_daily.executor import Executor, normalize_path_patterns
+from zotero_arxiv_daily.executor import Executor, normalize_path_patterns, original_abstract, plain_title
 from zotero_arxiv_daily.protocol import CorpusPaper
 
 
@@ -45,6 +45,28 @@ def test_normalize_path_patterns_accepts_none():
     assert normalize_path_patterns(None, "include_path") is None
 
 
+@pytest.mark.parametrize("raw, expected", [
+    ('Tunable Interband Transitions in Twisted\n    <mml:math xmlns:mml="http://www.w3.org/1998/Math/MathML" display="inline">\n'
+     '      <mml:mrow>\n        <mml:mi>h</mml:mi>\n        <mml:mtext>−</mml:mtext>\n        <mml:mi>BN</mml:mi>\n'
+     '      </mml:mrow>\n    </mml:math>\n    Heterostructures',
+     'Tunable Interband Transitions in Twisted h−BN Heterostructures'),
+    ('Oscillator Strength Crossover in Two-Dimensional PtSe<sub>2</sub>', 'Oscillator Strength Crossover in Two-Dimensional PtSe2'),
+    ('Phonons at T < 1 K &amp; above', 'Phonons at T < 1 K & above'),
+    ('Spin <i>and</i> <i>orbital</i> moments', 'Spin and orbital moments'),
+])
+def test_plain_title_removes_publisher_markup(raw, expected):
+    assert plain_title(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('Plasmons in TaS2 are slow.\n\n【摘要翻译】TaS2中的等离激元很慢。', 'Plasmons in TaS2 are slow.'),
+    ('No translation appended.', 'No translation appended.'),
+    ('【摘要翻译】只有译文。', '【摘要翻译】只有译文。'),
+])
+def test_original_abstract_drops_appended_translation(raw, expected):
+    assert original_abstract(raw) == expected
+
+
 # ---------------------------------------------------------------------------
 # filter_corpus — migrated from test_include_path.py
 # ---------------------------------------------------------------------------
@@ -66,6 +88,16 @@ def test_filter_corpus_matches_any_path_against_any_pattern():
     ]
     filtered = executor.filter_corpus(corpus)
     assert [p.title for p in filtered] == ["Survey Paper", "Reading Group Paper"]
+
+
+def test_filter_corpus_limits_theme_paths_to_included_collections():
+    executor = _make_executor(include_patterns=["2026/survey", "2026/survey/**"])
+    paper = CorpusPaper(title="Shared Paper", abstract="", added_date=datetime(2026, 1, 1),
+                        paths=["2026/thesis", "2026/survey", "2026/survey/topic-a", "2026"])
+    [filtered] = executor.filter_corpus([paper])
+    assert filtered.theme_paths == ["2026/survey", "2026/survey/topic-a"]
+    assert filtered.paths == paper.paths  # Original memberships stay traceable.
+    assert paper.theme_paths is None  # The fetched corpus is not mutated.
 
 
 def test_filter_corpus_excludes_papers_matching_ignore_path():

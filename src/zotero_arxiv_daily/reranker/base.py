@@ -58,7 +58,9 @@ class BaseReranker(ABC):
             raise ValueError("Invalid theme ranking parameters")
         groups = {}
         for j, paper in enumerate(corpus):
-            themes = {"/".join(path.split("/")[:depth]) for path in paper.paths if path}
+            # Collections outside include_path must not form themes or win recommendations.
+            paths = paper.paths if paper.theme_paths is None else paper.theme_paths
+            themes = {"/".join(path.split("/")[:depth]) for path in paths if path}
             for theme in sorted(themes or {"未分类"}):
                 groups.setdefault(theme, []).append(j)
         names = sorted(groups)

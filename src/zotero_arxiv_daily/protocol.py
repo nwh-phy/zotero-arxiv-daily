@@ -54,6 +54,8 @@ class Paper:
     related_papers: list[str] = field(default_factory=list)
     selection_score: Optional[float] = None
     evidence_excerpts: list[dict[str, str]] = field(default_factory=list)
+    relevance_score: Optional[int] = None
+    relevance_reason: Optional[str] = None
 
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')
@@ -199,3 +201,5 @@ class CorpusPaper:
     abstract: str
     added_date: datetime
     paths: list[str]
+    # Collections selected by include_path; None means every path is in scope.
+    theme_paths: Optional[list[str]] = None

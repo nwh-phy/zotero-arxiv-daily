@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import feedparser
+import pytest
 
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
 import zotero_arxiv_daily.retriever.arxiv_retriever as arxiv_retriever
@@ -285,3 +286,46 @@ def test_weekly_window_pages_deduplicates_and_ranks_metadata_only(config, monkey
     assert [c['start'] for c in calls] == [0, 2]
     assert 'submittedDate:[' in calls[0]['search_query']
     assert retriever.window['count'] == 2
+
+
+class _ApiResponse:
+    def __init__(self, status, headers=None):
+        self.status_code, self.headers, self.content = status, headers or {}, b'feed'
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise arxiv_retriever.requests.HTTPError(str(self.status_code), response=self)
+
+
+def _weekly_retriever(config, monkeypatch, responses, sleeps):
+    from datetime import datetime, timezone, timedelta
+    from omegaconf import open_dict
+    with open_dict(config):
+        config.source.arxiv.lookback_days = 7
+        config.source.arxiv.include_cross_list = True
+    end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    entry = SimpleNamespace(id='http://arxiv.org/abs/2601.00001v1', title='Paper', summary='Abstract',
+                            published_parsed=(end - timedelta(days=1)).timetuple(),
+                            author='Author', authors=[{'name': 'Author'}])
+    feed = SimpleNamespace(feed=SimpleNamespace(opensearch_totalresults='1'), bozo=False, entries=[entry])
+    monkeypatch.setattr(arxiv_retriever.requests, 'get', lambda url, **kwargs: responses.pop(0))
+    monkeypatch.setattr(arxiv_retriever.feedparser, 'parse', lambda _: feed)
+    monkeypatch.setattr(arxiv_retriever, 'sleep', sleeps.append)
+    return ArxivRetriever(config)
+
+
+def test_weekly_window_backs_off_when_arxiv_throttles(config, monkeypatch):
+    sleeps = []
+    responses = [_ApiResponse(429, {'Retry-After': '7'}), _ApiResponse(503), _ApiResponse(200)]
+    retriever = _weekly_retriever(config, monkeypatch, responses, sleeps)
+    assert len(retriever.retrieve_papers()) == 1
+    assert sleeps == [7, 60]  # Server-requested wait, then exponential backoff.
+
+
+def test_weekly_window_gives_up_after_bounded_throttled_attempts(config, monkeypatch):
+    sleeps = []
+    responses = [_ApiResponse(429) for _ in range(arxiv_retriever.API_ATTEMPTS)]
+    retriever = _weekly_retriever(config, monkeypatch, responses, sleeps)
+    with pytest.raises(arxiv_retriever.requests.HTTPError):
+        retriever.retrieve_papers()
+    assert sleeps == [30, 60, 120, 240, 480, 600, 600, 600, 600]

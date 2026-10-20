@@ -16,5 +16,10 @@ else:
                        ('Summaries generated', 'summaries_generated'), ('Failed', 'failed_count'),
                        ('Duration (seconds)', 'duration_seconds')]:
         print(f'- {label}: {report.get(key, 0)}')
+    if relevance := report.get('relevance'):
+        print(f"- LLM relevance: {relevance.get('mode')}; judged {relevance.get('judged', 0)}, "
+              f"passed {relevance.get('passed', 0)}, failed {relevance.get('failed', 0)}")
+    if previous := report.get('previous_delivery'):
+        print(f"- Previous brief saved to Zotero: {previous.get('saved', 0)}/{previous.get('delivered', 0)}")
     print()
     print('SMTP acceptance does not establish recipient inbox arrival. An uncertain submission requires history reconciliation before retrying.')

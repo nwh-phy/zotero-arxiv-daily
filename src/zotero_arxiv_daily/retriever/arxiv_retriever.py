@@ -24,6 +24,21 @@ DOWNLOAD_TIMEOUT = (10, 60)
 PDF_EXTRACT_TIMEOUT = 180
 HTML_EXTRACT_TIMEOUT = 90
 TAR_EXTRACT_TIMEOUT = 180
+# Throttling of shared runner addresses has lasted over 14 minutes; allow about an hour.
+API_ATTEMPTS = 10
+API_MAX_DELAY = 600
+API_HEADERS = {"User-Agent": "zotero-arxiv-daily weekly digest (+https://github.com/nwh-phy/zotero-arxiv-daily)"}
+
+
+def _api_retry_delay(error: Exception, attempt: int) -> float:
+    # arXiv throttles shared CI addresses; wait as asked instead of retrying at once.
+    response = getattr(error, "response", None)
+    if response is None or response.status_code not in (429, 503):
+        return 3
+    try:
+        return min(max(float(response.headers.get("Retry-After", "")), 3), API_MAX_DELAY)
+    except ValueError:
+        return min(30 * 2 ** attempt, API_MAX_DELAY)
 
 HTML_TAG_PATTERN = re.compile(
     r"</?(?:p|a|span|div|b|i|strong|em|br|hr|h[1-6]|ul|ol|li|sub|sup|table|tr|td|th)\b(?:\s+[^>]*)?/?>",
@@ -296,11 +311,12 @@ class ArxivRetriever(BaseRetriever):
         papers, seen = [], set()
         offset, page_size = 0, 500
         while True:
-            for attempt in range(3):
+            for attempt in range(API_ATTEMPTS):
                 try:
                     response = requests.get('https://export.arxiv.org/api/query', params={
                         'search_query': query, 'start': offset, 'max_results': page_size,
-                        'sortBy': 'submittedDate', 'sortOrder': 'descending'}, timeout=(10, 60))
+                        'sortBy': 'submittedDate', 'sortOrder': 'descending'},
+                        headers=API_HEADERS, timeout=(10, 60))
                     response.raise_for_status()
                     feed = feedparser.parse(response.content)
                     total = int(feed.feed.opensearch_totalresults)
@@ -309,10 +325,12 @@ class ArxivRetriever(BaseRetriever):
                     if offset < total and not feed.entries:
                         raise ValueError('Incomplete arXiv page')
                     break
-                except Exception:
-                    if attempt == 2:
+                except Exception as error:
+                    if attempt == API_ATTEMPTS - 1:
                         raise
-                    sleep(3)
+                    delay = _api_retry_delay(error, attempt)
+                    logger.warning(f'arXiv API request failed ({type(error).__name__}); retrying in {delay:.0f}s')
+                    sleep(delay)
             for entry in feed.entries:
                 paper = _entry_to_arxiv_result(entry)
                 if not start <= paper.published < end:

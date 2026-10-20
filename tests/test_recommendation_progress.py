@@ -38,6 +38,26 @@ def test_minority_theme_not_diluted_by_large_collection():
     assert ranked[0].related_papers == ['Minority reference']
 
 
+def test_themes_only_come_from_included_collections():
+    date = datetime(2026, 1, 1)
+    executor = Executor.__new__(Executor)
+    executor.include_path_patterns = ['20_主题/q-EELS', '20_主题/q-EELS/**']
+    executor.ignore_path_patterns = None
+    corpus = [CorpusPaper(f'EELS {i}', f'EELS {i}', date, ['20_主题/q-EELS']) for i in range(3)]
+    # A reference also filed in an excluded thesis folder and the bare root collection.
+    corpus.append(CorpusPaper('Shared', 'Shared', date, ['20_主题/q-EELS/声子', '10_项目/本科毕设', '20_主题']))
+    corpus.append(CorpusPaper('Excluded', 'Excluded', date, ['10_项目/本科毕设']))
+    corpus = executor.filter_corpus(corpus)
+    assert [p.title for p in corpus] == ['EELS 0', 'EELS 1', 'EELS 2', 'Shared']
+    sim = np.array([[.2, .2, .2, .9], [.6, .6, .6, .1]])
+    papers = [make_sample_paper(title='Off-topic'), make_sample_paper(title='On-topic')]
+    ranked = MatrixReranker(sim).rerank(papers, corpus)
+    assert {p.recommendation_theme for p in ranked} == {'20_主题/q-EELS'}
+    # Without the bare root theme, one shared reference no longer outranks consistent matches.
+    assert [p.title for p in ranked] == ['On-topic', 'Off-topic']
+    assert ranked[1].score == pytest.approx((.9 + .2 + .2) / 3 * 10)
+
+
 def test_decay_depends_on_elapsed_days_not_library_position():
     date = datetime(2026, 1, 1)
     def score(gap):
@@ -87,6 +107,21 @@ def test_key_sections_survive_long_tex_preamble_and_introduction():
 def test_markdown_and_plain_text_sections(text):
     excerpts = select_excerpts(text)
     assert [e['section'] for e in excerpts] == ['Conclusion', 'Results', 'Methods']
+
+
+def test_tex_headings_with_nested_braces_and_back_matter_exclusion():
+    text = ('\\begin{document}\n\\section{\\label{sec:level1}Introduction} BACKGROUND'
+            '\n\\section{\\label{sec:level2}Experimental methods} PAMBE_GROWTH'
+            '\n\\section{Results for AlN/Si(111) at $T_{\\rm sub}$} OBSERVED_POLARITY'
+            '\n\\section{Conclusion\\label{sec:conclusion}} FINAL_TRADEOFF'
+            '\n\\section*{Author Declarations} CONFLICT_STATEMENT'
+            '\n\\section*{Data Availability} DATA_STATEMENT')
+    excerpts = select_excerpts(text)
+    assert [e['section'] for e in excerpts] == [
+        'Conclusion', 'Results for AlN/Si(111) at $T_{\\rm sub}$', 'Experimental methods', 'Introduction']
+    supplied = ' '.join(e['text'] for e in excerpts)
+    assert all(marker in supplied for marker in ['PAMBE_GROWTH', 'OBSERVED_POLARITY', 'FINAL_TRADEOFF'])
+    assert 'CONFLICT_STATEMENT' not in supplied and 'DATA_STATEMENT' not in supplied
 
 
 def test_unstructured_text_includes_end_and_reference_only_has_no_evidence():

@@ -51,6 +51,7 @@ def _base_config():
                 "executor.history_enabled=false",
                 "executor.output_dir=null",
                 "reranker.ranking.mode=legacy",
+                "reranker.relevance.enabled=false",
                 "executor.send_empty=false",
             ],
         )
