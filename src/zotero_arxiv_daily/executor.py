@@ -232,6 +232,7 @@ class Executor:
         report['papers'] = [{'title': p.title, 'url': p.url, 'score': p.score,
                              'selection_score': p.selection_score, 'theme': p.recommendation_theme,
                              'relevance_score': p.relevance_score, 'relevance_reason': p.relevance_reason,
+                             'relevance_status': p.relevance_status,
                              'evidence_sections': [{'id': e['id'], 'section': e['section']} for e in p.evidence_excerpts]}
                             for p in ranked]
         if dry_run:
@@ -287,7 +288,8 @@ class Executor:
         # Every ranked candidate is archived so ranking changes can be compared offline.
         report['candidates'] = [{'id': paper_identity(p), 'title': p.title, 'score': p.score,
                                  'theme': p.recommendation_theme, 'relevance_score': p.relevance_score,
-                                 'relevance_reason': p.relevance_reason, 'selected': id(p) in chosen}
+                                 'relevance_reason': p.relevance_reason, 'relevance_status': p.relevance_status,
+                                 'selected': id(p) in chosen}
                                 for p in ranked]
         return selected
 

@@ -17,8 +17,9 @@ else:
                        ('Duration (seconds)', 'duration_seconds')]:
         print(f'- {label}: {report.get(key, 0)}')
     if relevance := report.get('relevance'):
-        print(f"- LLM relevance: {relevance.get('mode')}; judged {relevance.get('judged', 0)}, "
-              f"passed {relevance.get('passed', 0)}, failed {relevance.get('failed', 0)}")
+        print(f"- LLM relevance: {relevance.get('mode')}; attempted {relevance.get('attempted', 0)}, "
+              f"scored {relevance.get('scored', 0)}, passed threshold {relevance.get('passed_threshold', 0)}, "
+              f"failed {relevance.get('failed', 0)}, selected unscored {relevance.get('selected_unscored', 0)}")
     if previous := report.get('previous_delivery'):
         print(f"- Previous brief saved to Zotero: {previous.get('saved', 0)}/{previous.get('delivered', 0)}")
     print()

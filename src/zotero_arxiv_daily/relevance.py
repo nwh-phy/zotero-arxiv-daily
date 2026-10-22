@@ -48,23 +48,27 @@ def select(papers, openai_client, llm_params, options, limit):
     if top_k < limit or not 1 <= min_score <= 5:
         raise ValueError('Invalid relevance ranking parameters')
     shortlist = papers[:top_k]
-    failed = 0
     for paper in shortlist:
         try:
             paper.relevance_score, paper.relevance_reason = judge(openai_client, llm_params, profile, paper)
+            paper.relevance_status = 'scored'
         except Exception as exc:
-            failed += 1
+            paper.relevance_status = 'failed'
             logger.warning(f'Relevance judgement failed ({type(exc).__name__})')
-    summary = {'mode': 'applied', 'judged': len(shortlist), 'failed': failed, 'min_score': min_score}
-    if failed * 2 > len(shortlist):
-        # A provider outage must not silently empty the brief.
+    scored = [p for p in shortlist if p.relevance_status == 'scored']
+    passed = [p for p in scored if p.relevance_score >= min_score]
+    summary = {'mode': 'applied', 'attempted': len(shortlist), 'scored': len(scored),
+               'failed': len(shortlist) - len(scored), 'passed_threshold': len(passed), 'min_score': min_score}
+    if len(scored) * 2 < len(shortlist):
+        # A provider outage must not silently empty the brief; judgements stay for diagnosis.
         logger.warning('Most relevance judgements failed; keeping the embedding order')
-        for paper in shortlist:
-            paper.relevance_score = paper.relevance_reason = None
-        return papers[:limit], {**summary, 'mode': 'fallback'}
-    # Unjudged papers stay eligible after every judged one; embedding order breaks ties.
-    passing = [(i, p) for i, p in enumerate(shortlist)
-               if p.relevance_score is None or p.relevance_score >= min_score]
-    passing.sort(key=lambda item: (item[1].relevance_score is None, -(item[1].relevance_score or 0), item[0]))
-    selected = [paper for _, paper in passing[:limit]]
-    return selected, {**summary, 'passed': len(passing)}
+        selected = papers[:limit]
+        summary['mode'] = 'fallback'
+    else:
+        # Unscored papers stay eligible after every passing one, in embedding order.
+        order = {id(p): i for i, p in enumerate(shortlist)}
+        passed.sort(key=lambda p: (-p.relevance_score, order[id(p)]))
+        selected = (passed + [p for p in shortlist if p.relevance_status != 'scored'])[:limit]
+    summary['selected'] = len(selected)
+    summary['selected_unscored'] = sum(p.relevance_status != 'scored' for p in selected)
+    return selected, summary

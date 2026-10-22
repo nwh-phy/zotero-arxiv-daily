@@ -53,15 +53,31 @@ def test_select_orders_by_judgement_and_drops_low_scores():
     selected, summary = select(papers, client, PARAMS, OPTIONS, limit=3)
     # Judged papers first by score; an unjudged paper stays eligible after them; below 3 is dropped.
     assert [p.title for p in selected] == ['Phonon EELS', 'Plasmon', 'Unjudged']
-    assert summary == {'mode': 'applied', 'judged': 4, 'failed': 1, 'min_score': 3, 'passed': 3}
+    assert summary == {'mode': 'applied', 'attempted': 4, 'scored': 3, 'failed': 1, 'passed_threshold': 2,
+                       'min_score': 3, 'selected': 3, 'selected_unscored': 1}
     assert papers[0].relevance_reason == '冷原子'
+    assert [p.relevance_status for p in papers] == ['scored', 'scored', 'scored', 'failed', None]
+
+
+def test_unscored_fill_in_is_not_reported_as_passing():
+    # Review 2026-10-22 case: one 4, two 1s, one provider failure, two slots.
+    papers = [make_sample_paper(title=t) for t in 'ABCD']
+    client = llm_client({'A': scored(4, '同一技术'), 'B': scored(1), 'C': scored(1)})
+    selected, summary = select(papers, client, PARAMS, OPTIONS, limit=2)
+    assert [p.relevance_score for p in selected] == [4, None]
+    assert summary['passed_threshold'] == 1 and summary['selected_unscored'] == 1
+    html = render_email(selected, {'relevance': summary})
+    assert '成功评分 3 篇，其中 1 篇达到 3 分' in html and '另有 1 篇评分不可用，按相似度补选' in html
+    assert 'LLM 评分不可用，按相似度补选' in html and '2 篇达到' not in html
 
 
 def test_select_keeps_embedding_order_when_most_judgements_fail():
     papers = [make_sample_paper(title=t) for t in 'ABCD']
     selected, summary = select(papers, llm_client({'A': scored(1)}), PARAMS, OPTIONS, limit=2)
     assert [p.title for p in selected] == ['A', 'B']
-    assert summary['mode'] == 'fallback' and all(p.relevance_score is None for p in papers)
+    assert summary['mode'] == 'fallback' and summary['scored'] == 1 and summary['selected_unscored'] == 1
+    assert papers[0].relevance_score == 1  # Kept for diagnosis; selection used the embedding order.
+    assert '仅成功评分 1/4 篇，本期按相似度排序' in render_email(selected, {'relevance': summary})
 
 
 def test_select_requires_profile_and_enough_shortlist():
@@ -83,7 +99,7 @@ def test_executor_archives_every_ranked_candidate():
     assert [(c['id'], c['relevance_score'], c['selected']) for c in report['candidates']] == [
         ('arxiv:2610.00000', 2, False), ('arxiv:2610.00001', 4, True)]
     html = render_email([papers[1]], report)
-    assert 'LLM 判断 4/5：振动谱学' in html and '再由 LLM 按研究画像判断相关性' in html
+    assert 'LLM 判断 4/5：振动谱学' in html and 'LLM 按研究画像成功评分 2 篇，其中 1 篇达到 3 分' in html
 
 
 def test_library_identifiers_match_preprints_and_titles_without_false_dois():
