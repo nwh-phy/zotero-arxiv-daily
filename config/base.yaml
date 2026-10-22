@@ -63,6 +63,7 @@ reranker:
 
 executor:
   history_enabled: false # Coverage and deduplication for weekly arXiv retrieval
+  legacy_history_scopes: null # Earlier include/ignore lists whose histories (named with them) this subscription adopts once
   dry_run: false # Render artifacts without SMTP or advancing delivery coverage
   output_dir: verification/brief
   progress_dir: null # Optional persistent per-paper extraction and summary cache

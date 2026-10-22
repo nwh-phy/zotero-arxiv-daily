@@ -8,7 +8,7 @@ from omegaconf import open_dict
 import pytest
 
 from tests.canned_responses import make_sample_paper, make_stub_openai_client, make_stub_zotero_client, make_stub_smtp
-from zotero_arxiv_daily.history import DeliveryHistory, paper_identity
+from zotero_arxiv_daily.history import DeliveryHistory, paper_identity, scope_namespace
 from zotero_arxiv_daily.executor import Executor
 from zotero_arxiv_daily.utils import EmailDeliveryError, send_email
 from zotero_arxiv_daily.construct_email import render_email, html_to_text
@@ -122,42 +122,100 @@ def test_future_and_overlong_coverage_gaps_fail_explicitly(tmp_path):
         state.window_start(END, 7, 2, 90)
 
 
-def _legacy_history(tmp_path, name, covered=None, seen=None, pending=None):
+SUBSCRIPTION = {'receiver': 'reader@example.invalid', 'categories': ['physics.optics'], 'cross_list': True}
+
+
+def _legacy_scope(include, **changes):
+    return {**SUBSCRIPTION, **changes, 'include': sorted(include), 'ignore': []}
+
+
+def _legacy_history(tmp_path, scope, covered=None, seen=None, pending=None, last_delivery=None):
     data = {'schema': 1, 'covered_until': covered, 'first_attempt_start': None,
             'seen': seen or {}, 'pending': pending}
-    (tmp_path / f'history-{name}.json').write_text(json.dumps(data))
+    if last_delivery:
+        data['last_delivery'] = last_delivery
+    path = tmp_path / f'history-{scope_namespace(scope)}.json'
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _pending(batch_id, end, seen=None, papers=None):
+    return {'status': 'sending', 'batch_id': batch_id, 'end': end.isoformat(), 'seen': seen or {},
+            'papers': papers or []}
+
+
+OLD, NEW = _legacy_scope(['old/**']), _legacy_scope(['new/**'])
 
 
 def test_histories_from_earlier_collection_scopes_are_merged_once(tmp_path):
     # Two collection scopes delivered the same week (the 2026-10-19 duplicate brief).
-    _legacy_history(tmp_path, 'old', (END - timedelta(days=7)).isoformat(), {'arxiv:2610.00001': END.isoformat()})
-    _legacy_history(tmp_path, 'new', END.isoformat(), {'arxiv:2610.00002': END.isoformat()})
+    _legacy_history(tmp_path, OLD, (END - timedelta(days=7)).isoformat(), {'arxiv:2610.00001': END.isoformat()})
+    newer = _legacy_history(tmp_path, NEW, END.isoformat(), {'arxiv:2610.00002': END.isoformat()})
     delivered = [make_sample_paper(url=f'https://arxiv.org/abs/2610.0000{i}v1') for i in (1, 2)]
     fresh = make_sample_paper(url='https://arxiv.org/abs/2610.00003v1')
-    with DeliveryHistory(tmp_path, {'categories': ['physics.optics']}).locked() as state:
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as state:
         assert state.window_start(END + timedelta(days=7), 7, 2, 90) == END - timedelta(days=2)
         assert state.unseen([*delivered, fresh]) == [fresh]
         assert not state.path.exists()  # Adoption alone writes nothing, e.g. for a dry run.
         state.complete_empty([fresh], (END + timedelta(days=7)).isoformat())
-    _legacy_history(tmp_path, 'new', END.isoformat())  # Ignored once the merged history exists.
-    with DeliveryHistory(tmp_path, {'categories': ['physics.optics']}).locked() as restored:
+    saved = json.loads(state.path.read_text())
+    assert sorted(saved['migrated_from']) == sorted(f'history-{scope_namespace(s)}.json' for s in (OLD, NEW))
+    assert saved['scope'] == {'categories': ['physics.optics'], 'cross_list': True}  # Receiver stays hashed.
+    _legacy_history(tmp_path, NEW, END.isoformat())  # Ignored once the merged history exists.
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as restored:
         assert restored.unseen([*delivered, fresh]) == []
+    assert newer.exists()  # Earlier files are kept, never rewritten by adoption.
 
 
-def test_uncertain_or_unreadable_earlier_history_blocks_adoption(tmp_path):
-    pending = {'status': 'sending', 'batch_id': 'abc', 'end': END.isoformat(), 'seen': {}}
-    _legacy_history(tmp_path, 'a', END.isoformat(), pending=pending)
-    with DeliveryHistory(tmp_path, {}).locked() as state:
+@pytest.mark.parametrize('change', [{'receiver': 'other@example.invalid'}, {'categories': ['cond-mat.mes-hall']},
+                                    {'cross_list': False}])
+def test_other_subscriptions_histories_are_never_adopted(tmp_path, change):
+    other = _legacy_scope(['old/**'], **change)
+    _legacy_history(tmp_path, other, END.isoformat(), {'arxiv:2610.00001': END.isoformat()})
+    candidate = make_sample_paper(url='https://arxiv.org/abs/2610.00001v1')
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD]).locked() as state:
+        assert state.data['covered_until'] is None and state.unseen([candidate]) == [candidate]
+        assert state.window_start(END, 7, 2, 90) == END - timedelta(days=7)
+    with pytest.raises(ValueError, match='current subscription'):
+        DeliveryHistory(tmp_path, SUBSCRIPTION, [other])
+
+
+def test_older_adopted_pending_can_be_confirmed_without_moving_coverage_back(tmp_path):
+    later = (END + timedelta(days=7)).isoformat()
+    newest = {'end': later, 'papers': [{'id': 'arxiv:2610.00009', 'title': 'Later brief'}]}
+    pending = _pending('older', END + timedelta(days=1), {'arxiv:2610.00001': END.isoformat()},
+                       [{'id': 'arxiv:2610.00001', 'title': 'Older brief'}])
+    _legacy_history(tmp_path, OLD, END.isoformat(), pending=pending)
+    _legacy_history(tmp_path, NEW, later, last_delivery=newest)
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as state:
+        assert state.reconcile('older', accepted=True)
+        assert state.data['pending'] is None and state.data['covered_until'] == later
+        assert 'arxiv:2610.00001' in state.data['seen'] and state.data['last_delivery'] == newest
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as restored:
+        restored.assert_ready()
+        assert restored.data['covered_until'] == later
+
+
+def test_several_earlier_uncertain_batches_are_inspected_and_reconciled_one_by_one(tmp_path):
+    first = _legacy_history(tmp_path, OLD, END.isoformat(), pending=_pending('abc', END))
+    _legacy_history(tmp_path, NEW, END.isoformat(), pending=_pending('def', END + timedelta(days=1)))
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as state:
+        assert sorted(p['batch_id'] for p in state.pending_batches()) == ['abc', 'def']
+        with pytest.raises(RuntimeError, match='abc, def|def, abc'):
+            state.assert_ready()
+        assert not state.reconcile('unknown', accepted=True)
+        assert state.reconcile('abc', accepted=False)  # Resolved inside its own earlier file.
+    assert json.loads(first.read_text())['pending'] is None
+    with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked() as state:
+        assert [p['batch_id'] for p in state.pending_batches()] == ['def']
         with pytest.raises(RuntimeError, match='uncertain SMTP outcome'):
             state.assert_ready()
-        assert state.data['pending']['batch_id'] == 'abc'  # Reconcilable by its exact batch ID.
-    _legacy_history(tmp_path, 'b', END.isoformat(), pending={**pending, 'batch_id': 'def'})
-    with pytest.raises(RuntimeError, match='Several earlier histories'):
-        with DeliveryHistory(tmp_path, {}).locked():
-            pass
-    (tmp_path / 'history-b.json').write_text('broken json')
+        assert state.reconcile('def', accepted=True)
+        state.assert_ready()
+    first.write_text('broken json')
+    (tmp_path / f'delivery-history-{scope_namespace(SUBSCRIPTION)}.json').unlink()
     with pytest.raises(RuntimeError, match='unreadable'):
-        with DeliveryHistory(tmp_path, {}).locked():
+        with DeliveryHistory(tmp_path, SUBSCRIPTION, [OLD, NEW]).locked():
             pass
 
 

@@ -90,7 +90,12 @@ class Executor:
         scope = {'receiver': config.email.receiver,
                  'categories': sorted(config.source.arxiv.category or []),
                  'cross_list': config.source.arxiv.get('include_cross_list', False)}
-        self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope)
+        # Collection lists used by earlier versions, whose history file names also hashed them.
+        legacy_scopes = [{**scope,
+                          'include': sorted(normalize_path_patterns(entry.get('include'), 'legacy include') or []),
+                          'ignore': sorted(normalize_path_patterns(entry.get('ignore'), 'legacy ignore') or [])}
+                         for entry in config.executor.get('legacy_history_scopes') or []]
+        self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope, legacy_scopes)
         self.library_ids = set()
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:

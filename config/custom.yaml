@@ -82,6 +82,15 @@ reranker:
 
 executor:
   history_enabled: true
+  # Collection scopes of the 2026-10-19 deliveries (before and after PR #2); their history files
+  # are adopted once for this receiver/categories/cross-list. Other subscriptions never match.
+  legacy_history_scopes:
+    - include: ["20_主题/**", "30_方法/**", "10_项目/EELS去背与智能信号分析", "10_项目/EELS去背与智能信号分析/**",
+                "10_项目/博士衔接文章", "10_项目/博士衔接文章/**"]
+    - include: ["20_主题/q-EELS", "20_主题/q-EELS/**", "10_项目/EELS去背与智能信号分析", "10_项目/EELS去背与智能信号分析/**",
+                "20_主题/二维金属", "20_主题/二维金属/**", "30_方法/电镜理论", "30_方法/电镜理论/**",
+                "20_主题/in-situ", "20_主题/in-situ/**", "20_主题/手性声子&拓扑声子", "20_主题/手性声子&拓扑声子/**",
+                "20_主题/CDW", "20_主题/CDW/**", "10_项目/博士衔接文章", "10_项目/博士衔接文章/**"]
   progress_dir: .paper-progress
   debug: false
   source: ['arxiv']
