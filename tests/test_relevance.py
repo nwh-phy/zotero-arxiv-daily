@@ -197,12 +197,13 @@ def test_judgements_are_cached_and_invalidated_by_profile_model_or_text(tmp_path
     calls.clear()
     selected, summary = run(counting_client({'B': scored(5)}, calls))  # Rerun after an interruption.
     assert calls == ['B'] and summary['reused'] == 2 and [p.title for p in selected] == ['B', 'A']
+    default_entries = sorted(tmp_path.rglob('relevance-*.json'))  # The three judgements read by run().
     for changed in ({'options': {**OPTIONS, 'profile': '只关心冷原子'}},
                     {'params': {**PARAMS, 'generation_kwargs': {'model': 'other'}}}):
         calls.clear()
         run(counting_client({t: scored(3) for t in 'ABC'}, calls), **changed)
         assert calls == ['A', 'B', 'C']
-    next(tmp_path.rglob('relevance-*.json')).write_text('broken')
+    default_entries[0].write_text('broken')  # Not an entry of the changed profile or model.
     calls.clear()
     run(counting_client({t: scored(3) for t in 'ABC'}, calls))
     assert len(calls) == 1  # Only the unreadable entry is judged again.
