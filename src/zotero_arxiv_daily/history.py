@@ -43,11 +43,24 @@ def _check_papers(papers):
         raise ValueError('Invalid delivered paper list')
 
 
+def scope_namespace(scope):
+    return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
+
+
 class DeliveryHistory:
-    def __init__(self, directory, scope):
-        namespace = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
-        self.namespace = namespace
-        self.path = Path(directory) / (HISTORY_PREFIX + namespace + '.json') if directory else None
+    def __init__(self, directory, scope, legacy_scopes=()):
+        self.namespace = scope_namespace(scope)
+        self.path = Path(directory) / (HISTORY_PREFIX + self.namespace + '.json') if directory else None
+        # Earlier file names also hashed include/ignore paths. Only names recomputed from this
+        # subscription's own receiver, categories and cross-list setting may be adopted.
+        if any(legacy.get(key) != value for legacy in legacy_scopes for key, value in scope.items()):
+            raise ValueError('Legacy history scopes must belong to the current subscription')
+        self.legacy_paths = list(dict.fromkeys(
+            Path(directory) / (LEGACY_PREFIX + scope_namespace(legacy) + '.json') for legacy in legacy_scopes
+        )) if directory else []
+        self.legacy_pending = []
+        # Non-sensitive scope summary saved for inspection; the receiver stays hashed in the name.
+        self.scope_summary = {key: value for key, value in scope.items() if key != 'receiver'}
         self.data = {'schema': HISTORY_VERSION, 'covered_until': None,
                      'first_attempt_start': None, 'seen': {}, 'pending': None}
 
@@ -80,24 +93,26 @@ class DeliveryHistory:
             self._adopt_legacy()
 
     def _adopt_legacy(self):
-        # Merge histories keyed by earlier collection scopes, so changing include_path
-        # neither re-sends evaluated papers nor drops the overlap window. Saved on next write.
-        legacy = [self._read(path) for path in sorted(self.path.parent.glob(LEGACY_PREFIX + '*.json'))]
+        # Merge this subscription's histories keyed by earlier collection scopes, so changing
+        # include_path neither re-sends evaluated papers nor drops the overlap window. Saved on next write.
+        legacy = [(path, self._read(path)) for path in self.legacy_paths if path.exists()]
         if not legacy:
             return
-        pending = [data['pending'] for data in legacy if data.get('pending')]
+        pending = [(path, data['pending']) for path, data in legacy if data.get('pending')]
         if len(pending) > 1:
-            raise RuntimeError('Several earlier histories have uncertain deliveries; reconcile them before sending')
-        covered = [utc_date(data['covered_until']) for data in legacy if data.get('covered_until')]
-        attempts = [utc_date(data['first_attempt_start']) for data in legacy if data.get('first_attempt_start')]
+            # Each batch is reconciled in its own file; sending stays blocked until all are.
+            self.legacy_pending = pending
+        covered = [utc_date(data['covered_until']) for _, data in legacy if data.get('covered_until')]
+        attempts = [utc_date(data['first_attempt_start']) for _, data in legacy if data.get('first_attempt_start')]
         seen = {}
-        for data in legacy:
+        for _, data in legacy:
             seen.update(data['seen'])
         self.data = {'schema': HISTORY_VERSION,
                      'covered_until': max(covered).isoformat() if covered else None,
                      'first_attempt_start': None if covered or not attempts else min(attempts).isoformat(),
-                     'seen': seen, 'pending': pending[0] if pending else None}
-        deliveries = [data['last_delivery'] for data in legacy if data.get('last_delivery')]
+                     'seen': seen, 'pending': pending[0][1] if len(pending) == 1 else None,
+                     'migrated_from': [path.name for path, _ in legacy]}
+        deliveries = [data['last_delivery'] for _, data in legacy if data.get('last_delivery')]
         if deliveries:
             self.data['last_delivery'] = max(deliveries, key=lambda last: utc_date(last['end']))
 
@@ -141,6 +156,30 @@ class DeliveryHistory:
         if self.data.get('pending'):
             batch = self.data['pending']['batch_id']
             raise RuntimeError(f'Delivery {batch} has an uncertain SMTP outcome. Reconcile history before sending again.')
+        if self.legacy_pending:
+            batches = ', '.join(pending['batch_id'] for _, pending in self.legacy_pending)
+            raise RuntimeError(f'Earlier deliveries {batches} have uncertain SMTP outcomes. Reconcile each batch before sending again.')
+
+    def pending_batches(self):
+        return ([self.data['pending']] if self.data.get('pending') else []) + [p for _, p in self.legacy_pending]
+
+    def reconcile(self, batch_id, accepted):
+        """Resolve one uncertain batch by its exact ID; False when no pending batch matches."""
+        if self.data.get('pending') and self.data['pending']['batch_id'] == batch_id:
+            target = self
+        else:
+            match = next((path for path, pending in self.legacy_pending if pending['batch_id'] == batch_id), None)
+            if match is None:
+                return False
+            # Resolve the batch inside its own earlier file; the next run adopts the result.
+            target = DeliveryHistory(None, {})
+            target.path, target.data = match, self._read(match)
+        if accepted:
+            target.accepted()
+        else:
+            target.rejected()
+        self.legacy_pending = [(p, b) for p, b in self.legacy_pending if b['batch_id'] != batch_id]
+        return True
 
     def window_start(self, end, lookback_days, overlap_days, max_backfill_days):
         self.assert_ready()
@@ -211,18 +250,20 @@ class DeliveryHistory:
         pending = self.data.get('pending')
         if not pending:
             return
-        self.complete(pending['seen'], pending['end'], pending.get('papers'))
+        end, covered, last = pending['end'], self.data.get('covered_until'), self.data.get('last_delivery')
+        if pending.get('papers') is not None and (not last or utc_date(last['end']) <= utc_date(end)):
+            # Lets the next run report how many delivered papers were saved to Zotero.
+            self.data['last_delivery'] = {'end': end, 'papers': pending['papers']}
+        # An adopted older batch can end before later coverage: record its papers, keep the later boundary.
+        self.complete(pending['seen'], covered if covered and utc_date(end) < utc_date(covered) else end)
 
     def complete_empty(self, retrieved, end):
         self.complete(self._seen_records(retrieved, end), end)
 
-    def complete(self, seen, end, delivered=None):
+    def complete(self, seen, end):
         if self.data.get('covered_until') and utc_date(end) < utc_date(self.data['covered_until']):
             raise ValueError('Coverage cannot move backwards')
         self.data['covered_until'] = end
-        if delivered is not None:
-            # Lets the next run report how many delivered papers were saved to Zotero.
-            self.data['last_delivery'] = {'end': end, 'papers': delivered}
         self.data['first_attempt_start'] = None
         self.data['seen'].update(seen)
         cutoff = utc_date(end) - timedelta(days=HISTORY_RETENTION_DAYS)
@@ -233,6 +274,8 @@ class DeliveryHistory:
     def save(self):
         if self.path is None:
             return
+        if self.scope_summary:
+            self.data['scope'] = self.scope_summary
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = None
         try:

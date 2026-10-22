@@ -65,6 +65,12 @@ reranker:
     enabled: true
     top_k: 30
     min_score: 3
+    # Worst case of the stage is about 15 minutes instead of 30 papers x 3 attempts x 90 s.
+    time_budget_seconds: 900
+    request_timeout: 90
+    max_retries: 1
+    max_consecutive_failures: 5
+    max_tokens: 4096 # Value verified in preview 39400559220; lowering it needs a new preview
     profile: >-
       实验凝聚态物理与先进电子显微学研究者。核心方向：用单色化 STEM-EELS 与动量分辨 EELS（q-EELS、4D-EELS）测量低能集体激发及其色散，
       包括等离激元、声子、激子以及声子/等离激元极化激元；振动 EELS、界面与缺陷处的局域声子、纳米声子学与界面热输运；
@@ -82,6 +88,15 @@ reranker:
 
 executor:
   history_enabled: true
+  # Collection scopes of the 2026-10-19 deliveries (before and after PR #2); their history files
+  # are adopted once for this receiver/categories/cross-list. Other subscriptions never match.
+  legacy_history_scopes:
+    - include: ["20_主题/**", "30_方法/**", "10_项目/EELS去背与智能信号分析", "10_项目/EELS去背与智能信号分析/**",
+                "10_项目/博士衔接文章", "10_项目/博士衔接文章/**"]
+    - include: ["20_主题/q-EELS", "20_主题/q-EELS/**", "10_项目/EELS去背与智能信号分析", "10_项目/EELS去背与智能信号分析/**",
+                "20_主题/二维金属", "20_主题/二维金属/**", "30_方法/电镜理论", "30_方法/电镜理论/**",
+                "20_主题/in-situ", "20_主题/in-situ/**", "20_主题/手性声子&拓扑声子", "20_主题/手性声子&拓扑声子/**",
+                "20_主题/CDW", "20_主题/CDW/**", "10_项目/博士衔接文章", "10_项目/博士衔接文章/**"]
   progress_dir: .paper-progress
   debug: false
   source: ['arxiv']

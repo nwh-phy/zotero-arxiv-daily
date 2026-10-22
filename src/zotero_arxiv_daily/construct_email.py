@@ -180,8 +180,12 @@ def render_email(papers:list[Paper], context: dict | None = None) -> str:
         if p.related_papers:
             theme = f"主题：{p.recommendation_theme}；" if p.recommendation_theme else ''
             recommendation = theme + '相关收藏：' + '；'.join(p.related_papers)
+        judged = None
         if p.relevance_score is not None:
             judged = f'LLM 判断 {p.relevance_score}/5：{p.relevance_reason}'
+        elif p.relevance_status in ('failed', 'skipped'):
+            judged = 'LLM 评分不可用，按相似度补选'
+        if judged:
             recommendation = judged + ('；' + recommendation if recommendation else '')
         evidence = _summary_sources(p.tldr, p.evidence_excerpts)
         parts.append(get_block_html(p.title, authors, rate, p.tldr, p.pdf_url, affiliations, p.url, publication,
@@ -191,10 +195,13 @@ def render_email(papers:list[Paper], context: dict | None = None) -> str:
     ordering = '综合相关度、主题覆盖与内容重复程度排列' if any(p.recommendation_theme for p in papers) else '按相关度排序'
     relevance = context.get('relevance') or {}
     if relevance.get('mode') == 'applied':
-        ordering = (f"先按 Zotero 收藏相似度初筛 {int(relevance['judged'])} 篇，再由 LLM 按研究画像判断相关性，"
-                    f"{int(relevance['passed'])} 篇达到 {int(relevance['min_score'])} 分，按判断分数排列")
+        ordering = (f"先按 Zotero 收藏相似度初筛 {int(relevance['attempted'])} 篇，LLM 按研究画像成功评分 "
+                    f"{int(relevance['scored'])} 篇，其中 {int(relevance['passed_threshold'])} 篇达到 "
+                    f"{int(relevance['min_score'])} 分，按判断分数排列")
+        if relevance.get('selected_unscored'):
+            ordering += f"；另有 {int(relevance['selected_unscored'])} 篇评分不可用，按相似度补选"
     elif relevance.get('mode') == 'fallback':
-        ordering += '（LLM 相关性判断本期不可用）'
+        ordering += f"（LLM 仅成功评分 {int(relevance['scored'])}/{int(relevance['attempted'])} 篇，本期按相似度排序）"
     content = f'<h1>科研文献简报 · {today}（北京时间）</h1><p>推荐 {len(papers)} 篇，{ordering}。</p>'
     if previous := context.get('previous_delivery'):
         content += f"<p>上期推荐 {int(previous['delivered'])} 篇，目前已有 {int(previous['saved'])} 篇在你的 Zotero 中。</p>"

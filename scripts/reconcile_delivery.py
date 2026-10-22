@@ -16,18 +16,15 @@ executor = Executor(config)
 if not executor.history_enabled:
     raise SystemExit('Delivery history is disabled')
 with executor.history.locked():
-    pending = executor.history.data.get('pending')
+    batches = executor.history.pending_batches()
     if args.outcome == 'inspect':
-        if pending:
+        # Adopted earlier histories can hold several batches; each is reconciled separately.
+        for pending in batches:
             print('Pending batch: ' + pending['batch_id'])
             print('Pending coverage end: ' + pending['end'])
-        else:
+        if not batches:
             print('No uncertain delivery pending')
         raise SystemExit(0)
-    if not pending or pending['batch_id'] != args.batch_id:
+    if not args.batch_id or not executor.history.reconcile(args.batch_id, args.outcome == 'accepted'):
         raise SystemExit('No uncertain delivery matches that batch ID; nothing was changed')
-    if args.outcome == 'accepted':
-        executor.history.accepted()
-    else:
-        executor.history.rejected()
 print('History reconciled; no email was sent')

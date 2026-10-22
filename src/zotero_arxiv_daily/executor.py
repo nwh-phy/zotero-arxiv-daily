@@ -1,9 +1,10 @@
 from loguru import logger
 from pyzotero import zotero
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from .utils import glob_match
 from .retriever import get_retriever_cls
 from .protocol import CorpusPaper
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from html import unescape
@@ -19,7 +20,8 @@ from openai import OpenAI
 from tqdm import tqdm
 from .progress import PaperProgress
 from .history import DeliveryHistory, paper_identity
-from .relevance import select as select_relevant
+from .relevance import PROMPT_DIGEST, RELEVANCE_VERSION, select as select_relevant
+from .evaluation import build_bundle
 
 
 def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key: str) -> list[str] | None:
@@ -90,7 +92,12 @@ class Executor:
         scope = {'receiver': config.email.receiver,
                  'categories': sorted(config.source.arxiv.category or []),
                  'cross_list': config.source.arxiv.get('include_cross_list', False)}
-        self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope)
+        # Collection lists used by earlier versions, whose history file names also hashed them.
+        legacy_scopes = [{**scope,
+                          'include': sorted(normalize_path_patterns(entry.get('include'), 'legacy include') or []),
+                          'ignore': sorted(normalize_path_patterns(entry.get('ignore'), 'legacy ignore') or [])}
+                         for entry in config.executor.get('legacy_history_scopes') or []]
+        self.history = DeliveryHistory(self.progress.directory if self.history_enabled else None, scope, legacy_scopes)
         self.library_ids = set()
 
     def fetch_zotero_corpus(self) -> list[CorpusPaper]:
@@ -147,45 +154,72 @@ class Executor:
     def run(self):
         with self.history.locked():
             self.history.assert_ready()
-            self._run()
+            try:
+                self._run()
+            except Exception as exc:
+                # Failures before the brief is rendered (e.g. arXiv throttling) still leave a report.
+                report = getattr(self, 'report', None)
+                if report is not None and report['status'] == 'processing':
+                    report.update(status='failed', failed_stage=report.get('stage'), error_type=type(exc).__name__)
+                    self._write_report(report, self.started)
+                raise
+
+    @contextmanager
+    def _stage(self, report, name):
+        report['stage'] = name
+        started = monotonic()
+        try:
+            yield
+        finally:
+            timings = report.setdefault('timings', {})
+            timings[name] = round(timings.get(name, 0) + monotonic() - started, 2)
+        report['stage'] = None
 
     def _run(self):
-        started = monotonic()
+        started = self.started = monotonic()
         dry_run = bool(self.config.executor.get('dry_run', False))
-        report = {'status': 'processing', 'windows': {}, 'retrieved_count': 0,
-                  'candidate_count': 0, 'selected_count': 0,
-                  'summaries_reused': 0, 'summaries_generated': 0,
-                  'failed_count': 0, 'dry_run': dry_run}
+        report = self.report = {'status': 'processing', 'windows': {}, 'retrieved_count': 0,
+                                'candidate_count': 0, 'selected_count': 0,
+                                'summaries_reused': 0, 'summaries_generated': 0,
+                                'failed_count': 0, 'dry_run': dry_run}
         all_papers = []
-        if self.history_enabled:
-            end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            options = self.config.source.arxiv
-            self.retrievers['arxiv'].window_start = self.history.window_start(
-                end, int(options.lookback_days), int(options.get('overlap_days', 2)),
-                int(options.get('max_backfill_days', 90)),
-            )
-            if not dry_run:
-                self.history.remember_first_attempt(self.retrievers['arxiv'].window_start)
-        for source, retriever in self.retrievers.items():
-            logger.info(f'Retrieving {source} papers...')
-            papers = retriever.retrieve_papers()
-            all_papers.extend(papers)
-            if hasattr(retriever, 'window'):
-                report['windows'][source] = retriever.window
-        report['retrieved_count'] = len(all_papers)
-        candidates = self.history.unseen(all_papers) if self.history_enabled else all_papers
-        report['candidate_count'] = len(candidates)
-        logger.info(f'Retrieved {len(all_papers)} papers; {len(candidates)} new candidates')
-        coverage_end = report['windows'].get('arxiv', {}).get('end_utc_exclusive')
-        if self.history_enabled and not coverage_end:
-            raise RuntimeError('Weekly retrieval did not establish a complete coverage window')
+        with self._stage(report, 'retrieval'):
+            if self.history_enabled:
+                end = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                options = self.config.source.arxiv
+                self.retrievers['arxiv'].window_start = self.history.window_start(
+                    end, int(options.lookback_days), int(options.get('overlap_days', 2)),
+                    int(options.get('max_backfill_days', 90)),
+                )
+                report['history'] = {'migrated_from': len(self.history.data.get('migrated_from') or [])}
+                if not dry_run:
+                    self.history.remember_first_attempt(self.retrievers['arxiv'].window_start)
+            for source, retriever in self.retrievers.items():
+                logger.info(f'Retrieving {source} papers...')
+                papers = retriever.retrieve_papers()
+                all_papers.extend(papers)
+                if hasattr(retriever, 'window'):
+                    report['windows'][source] = retriever.window
+            report['retrieved_count'] = len(all_papers)
+            candidates = self.history.unseen(all_papers) if self.history_enabled else all_papers
+            report['candidate_count'] = len(candidates)
+            logger.info(f'Retrieved {len(all_papers)} papers; {len(candidates)} new candidates')
+            coverage_end = report['windows'].get('arxiv', {}).get('end_utc_exclusive')
+            if self.history_enabled and not coverage_end:
+                raise RuntimeError('Weekly retrieval did not establish a complete coverage window')
         ranked = []
         if candidates:
-            corpus = self.filter_corpus(self.fetch_zotero_corpus())
-            if not corpus:
-                raise RuntimeError('No Zotero papers with abstracts match the configured collections.')
-            report['previous_delivery'] = self._previous_delivery()
-            ranked = self._select(self.reranker.rerank(candidates, corpus), report)
+            with self._stage(report, 'zotero'):
+                corpus = self.filter_corpus(self.fetch_zotero_corpus())
+                if not corpus:
+                    raise RuntimeError('No Zotero papers with abstracts match the configured collections.')
+                report['previous_delivery'] = self._previous_delivery()
+            with self._stage(report, 'ranking'):
+                ordered = self.reranker.rerank(candidates, corpus)
+                report['ranking'] = getattr(self.reranker, 'stats', None)
+            with self._stage(report, 'relevance'):
+                ranked = self._select(ordered, report)
+            self._write_evaluation(ordered, ranked, report)
             report['selected_count'] = len(ranked)
             report['corpus_count'] = len(corpus)
             for paper in tqdm(ranked):
@@ -195,11 +229,13 @@ class Executor:
                         report['summaries_reused'] += 1
                     else:
                         retriever = self.retrievers.get(paper.source)
-                        if (not self.progress.has_extraction(paper) and retriever is not None
-                                and hasattr(retriever, 'enrich_selected')):
-                            retriever.enrich_selected(paper)
-                        self.progress.save(paper, self.config.llm, status='extracted')
-                        paper.generate_tldr(self.openai_client, self.config.llm)
+                        with self._stage(report, 'extraction'):
+                            if (not self.progress.has_extraction(paper) and retriever is not None
+                                    and hasattr(retriever, 'enrich_selected')):
+                                retriever.enrich_selected(paper)
+                            self.progress.save(paper, self.config.llm, status='extracted')
+                        with self._stage(report, 'summaries'):
+                            paper.generate_tldr(self.openai_client, self.config.llm)
                         self.progress.save(paper, self.config.llm, status='complete')
                         report['summaries_generated'] += 1
                     if self.config.llm.get('generate_affiliations', True):
@@ -212,9 +248,10 @@ class Executor:
                 report['status'] = 'summary_failed'
                 self._write_report(report, started)
                 raise RuntimeError(f"{report['failed_count']} selected papers failed; email was not sent. Rerun to resume.")
-            if self.config.llm.get('strict_summary', False) and any(
-                    not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
-                raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
+            with self._stage(report, 'summaries'):
+                if self.config.llm.get('strict_summary', False) and any(
+                        not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
+                    raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
         if not ranked and not self.config.executor.send_empty:
             # Candidates judged irrelevant were still evaluated, so coverage advances.
             if self.history_enabled and not dry_run:
@@ -227,6 +264,7 @@ class Executor:
         report['papers'] = [{'title': p.title, 'url': p.url, 'score': p.score,
                              'selection_score': p.selection_score, 'theme': p.recommendation_theme,
                              'relevance_score': p.relevance_score, 'relevance_reason': p.relevance_reason,
+                             'relevance_status': p.relevance_status,
                              'evidence_sections': [{'id': e['id'], 'section': e['section']} for e in p.evidence_excerpts]}
                             for p in ranked]
         if dry_run:
@@ -239,10 +277,11 @@ class Executor:
         report['status'] = 'submission_prepared'
         self._write_report(report, started, html)
         try:
-            if batch_id:
-                send_email(self.config, html, message_id=f'<{batch_id}@zotero-arxiv-daily.local>')
-            else:
-                send_email(self.config, html)
+            with self._stage(report, 'delivery'):
+                if batch_id:
+                    send_email(self.config, html, message_id=f'<{batch_id}@zotero-arxiv-daily.local>')
+                else:
+                    send_email(self.config, html)
         except EmailDeliveryError as exc:
             if not exc.uncertain:
                 self.history.rejected()
@@ -271,18 +310,43 @@ class Executor:
         self._write_report(report, started, html)
         logger.info('SMTP accepted the brief; recipient inbox arrival remains unverified')
 
+    def _write_evaluation(self, ordered, selected, report):
+        output_dir = self.config.executor.get('output_dir')
+        last = getattr(self.reranker, 'last_run', None)
+        if not output_dir or last is None:
+            return
+        reranker = self.config.executor.reranker
+        relevance = self.config.reranker.get('relevance') or {}
+        settings = {'ranking': OmegaConf.to_container(self.config.reranker.get('ranking') or {}, resolve=True),
+                    'relevance': {**OmegaConf.to_container(relevance, resolve=True),
+                                  'prompt_digest': PROMPT_DIGEST, 'version': RELEVANCE_VERSION},
+                    'embedding': f"{reranker}:{(self.config.reranker.get(reranker) or {}).get('model')}",
+                    'llm_model': self.config.llm.generation_kwargs.get('model'),
+                    'max_paper_num': int(self.config.executor.max_paper_num),
+                    'code': os.environ.get('GITHUB_SHA')}
+        bundle = build_bundle(last['candidates'], ordered, selected, last['corpus'], last['similarity'],
+                              settings, report['windows'])
+        try:
+            directory = Path(output_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / 'evaluation.json').write_text(json.dumps(bundle, ensure_ascii=False), encoding='utf-8')
+        except OSError:
+            logger.warning('Evaluation bundle could not be written')
+
     def _select(self, ranked, report):
         limit = int(self.config.executor.max_paper_num)
         options = self.config.reranker.get('relevance') or {}
         if options.get('enabled', False):
-            selected, report['relevance'] = select_relevant(ranked, self.openai_client, self.config.llm, options, limit)
+            selected, report['relevance'] = select_relevant(ranked, self.openai_client, self.config.llm,
+                                                               options, limit, cache=self.progress)
         else:
             selected = ranked[:limit]
         chosen = {id(p) for p in selected}
         # Every ranked candidate is archived so ranking changes can be compared offline.
         report['candidates'] = [{'id': paper_identity(p), 'title': p.title, 'score': p.score,
                                  'theme': p.recommendation_theme, 'relevance_score': p.relevance_score,
-                                 'relevance_reason': p.relevance_reason, 'selected': id(p) in chosen}
+                                 'relevance_reason': p.relevance_reason, 'relevance_status': p.relevance_status,
+                                 'selected': id(p) in chosen}
                                 for p in ranked]
         return selected
 
