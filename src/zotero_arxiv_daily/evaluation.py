@@ -4,6 +4,7 @@ A bundle stores the candidates (title, abstract, stage-1 rank, relevance judgeme
 reference library as ranked (title, date, theme paths), the embedding similarity matrix and the
 effective settings, so ranking options can be compared on a fixed sample without the model or API.
 """
+import base64
 import csv
 from datetime import datetime
 
@@ -30,7 +31,21 @@ def build_bundle(candidates, ordered, selected, corpus, similarity, settings, wi
                             'selected': id(p) in chosen} for p in candidates],
             'corpus': [{'title': c.title, 'added_date': c.added_date.isoformat(),
                         'theme_paths': c.paths if c.theme_paths is None else c.theme_paths} for c in corpus],
-            'similarity': np.round(similarity, 4).tolist()}
+            'similarity': encode_matrix(similarity)}
+
+
+def encode_matrix(matrix):
+    # Exact little-endian bytes: rounding flipped near-tied greedy picks when replaying a real week.
+    matrix = np.ascontiguousarray(matrix)
+    dtype = matrix.dtype.newbyteorder('<')
+    return {'dtype': dtype.str, 'shape': list(matrix.shape),
+            'base64': base64.b64encode(matrix.astype(dtype).tobytes()).decode('ascii')}
+
+
+def decode_matrix(value):
+    if isinstance(value, list):  # Rounded format of bundles written before exact storage.
+        return np.array(value, dtype=float)
+    return np.frombuffer(base64.b64decode(value['base64']), dtype=value['dtype']).reshape(value['shape'])
 
 
 def write_label_template(bundle, path):
@@ -81,7 +96,7 @@ class _StoredSimilarity(BaseReranker):
 def replay(bundle, **overrides):
     """Stage-1 order of candidate IDs under changed ranking options, from the stored similarities."""
     options = {**bundle['settings']['ranking'], **overrides}
-    similarity = np.array(bundle['similarity'], dtype=float)
+    similarity = decode_matrix(bundle['similarity'])
     size = len(bundle['corpus'])
     if options.get('mode', 'legacy') != 'theme_balanced':
         similarity = similarity[:, :size]

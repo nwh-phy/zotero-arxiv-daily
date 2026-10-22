@@ -101,7 +101,7 @@ def test_run_archives_bundle_timings_and_no_credentials(config, tmp_path, monkey
     assert {'retrieval', 'zotero', 'ranking', 'relevance', 'extraction', 'summaries'} <= set(report['timings'])
     raw = (tmp_path / 'report/evaluation.json').read_text()
     bundle = json.loads(raw)
-    assert len(bundle['candidates']) == 3 and np.array(bundle['similarity']).shape == (3, len(bundle['corpus']) + 3)
+    assert len(bundle['candidates']) == 3 and bundle['similarity']['shape'] == [3, len(bundle['corpus']) + 3]
     assert replay(bundle) == stage1_order(bundle)
     assert 'fake-zotero-key' not in raw and 'sk-fake' not in raw and 'localhost:30000' not in raw
 
@@ -121,3 +121,19 @@ def test_failure_before_rendering_leaves_a_report_with_stage_and_error_type(conf
     assert report['status'] == 'failed' and report['failed_stage'] == 'retrieval'
     assert report['error_type'] == 'ConnectionError' and 'retrieval' in report['timings']
     assert 'secret=1' not in raw  # Only the error type is reported, never the upstream message.
+
+
+def test_replay_is_exact_where_rounding_would_flip_a_near_tie():
+    date = datetime(2026, 10, 1)
+    corpus = [CorpusPaper('Ref', 'a', date, ['20_主题/q-EELS'])]
+    papers = [make_sample_paper(title=f'P{i}', url=f'https://arxiv.org/abs/2610.0000{i}v1') for i in range(2)]
+    # Equal after rounding to 4 decimals (the index would then break the tie); exact values favour P1.
+    similarity = np.array([[0.70001, 1, 0], [0.70004, 0, 1]], dtype=np.float32)
+    reranker = FixedReranker(similarity)
+    ordered = reranker.rerank(papers, corpus)
+    last = reranker.last_run
+    bundle = json.loads(json.dumps(build_bundle(last['candidates'], ordered, ordered[:1], last['corpus'],
+                                                last['similarity'], {'ranking': THEME}, {})))
+    assert stage1_order(bundle)[0] == 'arxiv:2610.00001' and replay(bundle) == stage1_order(bundle)
+    rounded = {**bundle, 'similarity': np.round(similarity, 4).tolist()}  # Older bundle format.
+    assert replay(rounded)[0] == 'arxiv:2610.00000'
