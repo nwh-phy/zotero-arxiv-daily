@@ -65,4 +65,17 @@ Cache eviction, restoration failure, hard cancellation and the unavoidable SMTP/
 
 Run locally with `executor.dry_run=true`, or select `dry_run` when dispatching the weekly workflow, to render a preview without SMTP, delivery markers or coverage advancement. Required provider/library configuration still needs to be available. A preview may populate the reusable extraction/summary cache; it does not mark candidates as evaluated for delivery. A dry-run dispatch works while `DELIVERY_ENABLED=false` and ignores a prior successful same-day marker. Scheduled jobs continue to respect that gate. `executor.output_dir` defaults to `verification/brief`; `brief.html`, `brief.txt` and an aggregate `report.json` distinguish preview, no-candidate, failed, uncertain and SMTP-accepted outcomes. The weekly workflow retains report artifacts for 14 days and posts aggregate counts/duration to its job summary. HTML/plain-text artifacts contain recommendation/reference content and should be handled as personal literature data; resolved secrets/configuration are never included.
 
+`report.json` records per-stage seconds in `timings` (retrieval, zotero, ranking, relevance, extraction, summaries, delivery), local-embedding `ranking` stats (model load, encode, encoded texts), relevance counts including cache reuse, and `history.migrated_from`. A failure before the brief is rendered, such as arXiv throttling, still writes `report.json` with `status: failed`, `failed_stage` and `error_type`, never the upstream error text.
+
+Each run that ranks candidates also writes `evaluation.json` beside the report: every candidate's title, abstract, stage-1 rank, embedding score and theme, relevance judgement and selection; the reference library as ranked (title, date, theme paths); the embedding similarity matrix (4 decimals; about 2 MB for a 450-paper week); and the effective ranking/relevance settings, prompt digest, model names and commit. It contains no credentials or endpoint. To build a fixed evaluation sample, download a run's artifact into the Git-ignored `verification/` tree (artifacts expire after 14 days), then:
+
+```bash
+uv run --frozen scripts/evaluate_ranking.py verification/eval/RUN/evaluation.json --template labels.csv
+# label rows 精读 / 浏览 / 不相关 (including some of ranks 31–80), then
+uv run --frozen scripts/evaluate_ranking.py verification/eval/RUN/evaluation.json --labels labels.csv \
+  --set theme_penalty=0.02
+```
+
+It reports the useful share of the recorded selection and of the stage-1 top 10/30, lists labelled useful papers that were not selected with their stage-1 rank, and replays stage 1 from the stored similarities under `--set` overrides without the model or any API call. LLM judgements exist only for the recorded shortlist, so `top_k` and threshold changes still need labels on the papers involved.
+
 Actions `CUSTOM_CONFIG` now merges into the checked-out configuration, preserving newly added defaults when old variables omit them. Explicit settings such as `ranking.mode: legacy` or `history_enabled: false` still take precedence. Credential values in the override must be environment references; literal keys/passwords are rejected without printing the values. Existing bare full-text confirmation instructions are normalized to numbered labels. Manual Test/preview dispatches use the selected branch, while scheduled runs use the default branch. Pull-request CI covers both `main` and `dev` targets.

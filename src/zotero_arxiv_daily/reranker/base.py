@@ -29,6 +29,8 @@ class BaseReranker(ABC):
         expected = (len(candidates), len(corpus) + (len(candidates) if mode == "theme_balanced" else 0))
         if sim.shape != expected or not np.isfinite(sim).all():
             raise ValueError("Invalid embedding similarity matrix")
+        # Kept so a run's ranking can be archived and replayed offline without the model.
+        self.last_run = {"candidates": candidates, "corpus": corpus, "similarity": sim}
         if mode == "theme_balanced":
             return self._theme_rerank(candidates, corpus, sim, options)
         weights = 1 / (1 + np.log10(np.arange(len(corpus)) + 1))

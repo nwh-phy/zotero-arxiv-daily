@@ -1,6 +1,7 @@
 from .base import BaseReranker, register_reranker
 import logging
 import warnings
+from time import monotonic
 import numpy as np
 @register_reranker("local")
 class LocalReranker(BaseReranker):
@@ -19,14 +20,18 @@ class LocalReranker(BaseReranker):
             logging.getLogger("huggingface_hub.utils._http").setLevel(logging.ERROR)
             warnings.filterwarnings("ignore", category=FutureWarning)
 
+        started = monotonic()
         encoder = SentenceTransformer(self.config.reranker.local.model, trust_remote_code=True,
                                       device=self.config.reranker.local.get("device", "cpu"))
+        loaded = monotonic()
         if self.config.reranker.local.encode_kwargs:
             encode_kwargs = self.config.reranker.local.encode_kwargs
         else:
             encode_kwargs = {}
         texts = list(dict.fromkeys(s1 + s2))
         features = encoder.encode(texts, **encode_kwargs, show_progress_bar=True)
+        self.stats = {"model_load_seconds": round(loaded - started, 2),
+                      "encode_seconds": round(monotonic() - loaded, 2), "encoded_texts": len(texts)}
         indices = {text: i for i, text in enumerate(texts)}
         s1_feature = features[[indices[text] for text in s1]]
         s2_feature = features[[indices[text] for text in s2]]
