@@ -65,6 +65,12 @@ reranker:
     enabled: true
     top_k: 30
     min_score: 3
+    # Worst case of the stage is about 15 minutes instead of 30 papers x 3 attempts x 90 s.
+    time_budget_seconds: 900
+    request_timeout: 90
+    max_retries: 1
+    max_consecutive_failures: 5
+    max_tokens: 4096 # Value verified in preview 39400559220; lowering it needs a new preview
     profile: >-
       实验凝聚态物理与先进电子显微学研究者。核心方向：用单色化 STEM-EELS 与动量分辨 EELS（q-EELS、4D-EELS）测量低能集体激发及其色散，
       包括等离激元、声子、激子以及声子/等离激元极化激元；振动 EELS、界面与缺陷处的局域声子、纳米声子学与界面热输运；

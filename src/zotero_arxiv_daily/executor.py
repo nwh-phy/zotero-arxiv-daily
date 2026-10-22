@@ -281,7 +281,8 @@ class Executor:
         limit = int(self.config.executor.max_paper_num)
         options = self.config.reranker.get('relevance') or {}
         if options.get('enabled', False):
-            selected, report['relevance'] = select_relevant(ranked, self.openai_client, self.config.llm, options, limit)
+            selected, report['relevance'] = select_relevant(ranked, self.openai_client, self.config.llm,
+                                                               options, limit, cache=self.progress)
         else:
             selected = ranked[:limit]
         chosen = {id(p) for p in selected}

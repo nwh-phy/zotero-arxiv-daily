@@ -49,6 +49,11 @@ reranker:
     top_k: 30 # Shortlist size from the embedding ranking; must be at least executor.max_paper_num
     min_score: 3 # 1-5; papers judged below this are not recommended, so a brief may have fewer papers
     profile: null # Plain-text research interests used in the relevance prompt
+    time_budget_seconds: 900 # Stage cap: no request starts if its worst case would exceed this
+    request_timeout: 90 # Seconds per judgement request
+    max_retries: 1 # SDK retries per judgement request
+    max_consecutive_failures: 5 # Stop calling the provider after this many failures in a row
+    max_tokens: null # Output budget per judgement; null inherits llm.generation_kwargs.max_tokens
   local:
     model: jinaai/jina-embeddings-v5-text-nano-retrieval # The Hugging Face model name of the local embedding model. Example: jinaai/jina-embeddings-v5-text-nano
     encode_kwargs:

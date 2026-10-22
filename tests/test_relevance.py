@@ -53,8 +53,9 @@ def test_select_orders_by_judgement_and_drops_low_scores():
     selected, summary = select(papers, client, PARAMS, OPTIONS, limit=3)
     # Judged papers first by score; an unjudged paper stays eligible after them; below 3 is dropped.
     assert [p.title for p in selected] == ['Phonon EELS', 'Plasmon', 'Unjudged']
-    assert summary == {'mode': 'applied', 'attempted': 4, 'scored': 3, 'failed': 1, 'passed_threshold': 2,
-                       'min_score': 3, 'selected': 3, 'selected_unscored': 1}
+    assert {k: v for k, v in summary.items() if k != 'seconds'} == {
+        'mode': 'applied', 'attempted': 4, 'scored': 3, 'reused': 0, 'failed': 1, 'skipped': 0,
+        'passed_threshold': 2, 'min_score': 3, 'selected': 3, 'selected_unscored': 1}
     assert papers[0].relevance_reason == '冷原子'
     assert [p.relevance_status for p in papers] == ['scored', 'scored', 'scored', 'failed', None]
 
@@ -92,6 +93,8 @@ def test_executor_archives_every_ranked_candidate():
     executor.config = OmegaConf.create({'executor': {'max_paper_num': 1}, 'llm': PARAMS,
                                         'reranker': {'relevance': {**OPTIONS, 'enabled': True}}})
     executor.openai_client = llm_client({'A': scored(2), 'B': scored(4, '振动谱学')})
+    from zotero_arxiv_daily.progress import PaperProgress
+    executor.progress = PaperProgress(None, 'library')
     papers = [make_sample_paper(title=t, url=f'https://arxiv.org/abs/2610.0000{i}v1', score=9 - i)
               for i, t in enumerate('AB')]
     report = {}
@@ -168,3 +171,85 @@ def test_next_brief_reports_how_many_delivered_papers_were_saved(relevance_execu
     report = json.loads((tmp_path / 'report/report.json').read_text())
     assert report['previous_delivery']['delivered'] == 1 and report['previous_delivery']['saved'] == 1
     assert '上期推荐 1 篇，目前已有 1 篇在你的 Zotero 中' in sent[-1]
+
+
+def counting_client(replies, calls, advance=None):
+    """llm_client that records requested titles and optionally advances a fake clock."""
+    inner = llm_client(replies)
+    def create(**kwargs):
+        text = str(kwargs.get('messages') or kwargs.get('input'))
+        calls.append(next((t for t in 'ABCDEF' if f'Title: {t}' in text), '?'))
+        if advance:
+            advance()
+        return inner.responses.create(**kwargs)
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+                           responses=SimpleNamespace(create=create))
+
+
+def test_judgements_are_cached_and_invalidated_by_profile_model_or_text(tmp_path):
+    from zotero_arxiv_daily.progress import PaperProgress
+    cache = PaperProgress(tmp_path, 'library')
+    run = lambda client, options=OPTIONS, params=PARAMS: select(
+        [make_sample_paper(title=t, abstract=f'About {t}') for t in 'ABC'], client, params, options, 2, cache=cache)
+    calls = []
+    _, summary = run(counting_client({'A': scored(4), 'C': scored(2)}, calls))  # B fails: not cached.
+    assert calls == ['A', 'B', 'C'] and summary['reused'] == 0
+    calls.clear()
+    selected, summary = run(counting_client({'B': scored(5)}, calls))  # Rerun after an interruption.
+    assert calls == ['B'] and summary['reused'] == 2 and [p.title for p in selected] == ['B', 'A']
+    for changed in ({'options': {**OPTIONS, 'profile': '只关心冷原子'}},
+                    {'params': {**PARAMS, 'generation_kwargs': {'model': 'other'}}}):
+        calls.clear()
+        run(counting_client({t: scored(3) for t in 'ABC'}, calls), **changed)
+        assert calls == ['A', 'B', 'C']
+    next(tmp_path.rglob('relevance-*.json')).write_text('broken')
+    calls.clear()
+    run(counting_client({t: scored(3) for t in 'ABC'}, calls))
+    assert len(calls) == 1  # Only the unreadable entry is judged again.
+
+
+def test_consecutive_failures_stop_provider_calls():
+    calls = []
+    papers = [make_sample_paper(title=t) for t in 'ABCD']
+    selected, summary = select(papers, counting_client({}, calls), PARAMS,
+                               {**OPTIONS, 'max_consecutive_failures': 2}, limit=2)
+    assert calls == ['A', 'B'] and [p.relevance_status for p in papers] == ['failed', 'failed', 'skipped', 'skipped']
+    assert summary['mode'] == 'fallback' and summary['failed'] == 2 and summary['skipped'] == 2
+    assert [p.title for p in selected] == ['A', 'B']
+
+
+def test_stage_never_starts_a_request_that_could_exceed_its_budget(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr('zotero_arxiv_daily.relevance.monotonic', lambda: clock[0])
+    def tick():
+        clock[0] += 60  # Every request takes its full timeout.
+    calls = []
+    papers = [make_sample_paper(title=t) for t in 'ABCDEF']
+    options = {**OPTIONS, 'top_k': 6, 'time_budget_seconds': 300, 'request_timeout': 60, 'max_retries': 0}
+    _, summary = select(papers, counting_client({t: scored(4) for t in 'ABCDEF'}, calls, tick), PARAMS, options, 2)
+    assert calls == list('ABCDE') and papers[5].relevance_status == 'skipped'
+    assert clock[0] <= 300 and summary['skipped'] == 1 and summary['seconds'] == 300
+
+
+def test_requests_use_stage_timeout_retries_and_output_budget():
+    seen = {}
+    inner = counting_client({'A': scored(4)}, [])
+    def with_options(**kwargs):
+        seen['client'] = kwargs
+        def create(**request):
+            seen['max_tokens'] = request.get('max_tokens')
+            return inner.chat.completions.create(**request)
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client = SimpleNamespace(with_options=with_options)
+    options = {**OPTIONS, 'top_k': 1, 'request_timeout': 30, 'max_retries': 0, 'max_tokens': 512}
+    select([make_sample_paper(title='A')], client, PARAMS, options, limit=1)
+    assert seen == {'client': {'timeout': 30.0, 'max_retries': 0}, 'max_tokens': 512}
+
+
+def test_relevance_cache_stores_no_credentials_endpoint_or_profile(tmp_path):
+    from zotero_arxiv_daily.progress import PaperProgress
+    params = {**PARAMS, 'api': {'key': 'sk-secret-value', 'base_url': 'https://llm.example.invalid/v1'}}
+    select([make_sample_paper(title='A')], llm_client({'A': scored(4)}), params, {**OPTIONS, 'top_k': 1}, 1,
+           cache=PaperProgress(tmp_path, 'library'))
+    [record] = [p.read_text() for p in tmp_path.rglob('relevance-*.json')]
+    assert all(secret not in record for secret in ('sk-secret-value', 'llm.example.invalid', OPTIONS['profile']))

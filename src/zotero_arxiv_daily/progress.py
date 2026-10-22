@@ -87,6 +87,42 @@ class PaperProgress:
             payload['error_type'] = error_type
         record = {'schema': CACHE_VERSION, 'key': self.key(paper), 'payload': payload,
                   'checksum': _digest(payload)}
+        self._write(record['key'] + '.json', record)
+
+    def relevance_key(self, paper, params, extra):
+        # Model, endpoint, generation policy, prompt and profile all invalidate a judgement.
+        params = OmegaConf.to_container(params, resolve=True) if OmegaConf.is_config(params) else dict(params)
+        return _digest({'schema': CACHE_VERSION, 'api_mode': params.get('api_mode'),
+                        'generation': params.get('generation_kwargs'),
+                        'endpoint': params.get('api', {}).get('base_url'), **extra,
+                        'paper': [paper.source, paper.url, paper.title, paper.abstract]})
+
+    def load_relevance(self, key):
+        """A validated cached (score, reason), or None; failures are never cached."""
+        if self.directory is None:
+            return None
+        try:
+            record = json.loads((self.directory / f'relevance-{key}.json').read_text())
+            judgement = record['judgement']
+            if record.get('key') != key or record.get('checksum') != _digest(judgement):
+                raise ValueError('Invalid relevance record')
+            score, reason = judgement['score'], judgement['reason']
+            if isinstance(score, bool) or not isinstance(score, int) or not 1 <= score <= 5 or not isinstance(reason, str):
+                raise ValueError('Invalid relevance record')
+            return score, reason
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, KeyError):
+            logger.warning('Unreadable relevance cache entry; the paper will be judged again')
+            return None
+
+    def save_relevance(self, key, score, reason):
+        if self.directory is None:
+            return
+        judgement = {'score': score, 'reason': reason}
+        self._write(f'relevance-{key}.json', {'key': key, 'judgement': judgement, 'checksum': _digest(judgement)})
+
+    def _write(self, name, record):
         temporary = None
         try:
             self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -95,7 +131,7 @@ class PaperProgress:
                 json.dump(record, file, ensure_ascii=False)
                 file.flush()
                 os.fsync(file.fileno())
-            temporary.replace(self.directory / (record['key'] + '.json'))
+            temporary.replace(self.directory / name)
         except OSError:
             # Cache availability must not prevent otherwise valid processing.
             logger.warning('Paper checkpoint could not be saved')
