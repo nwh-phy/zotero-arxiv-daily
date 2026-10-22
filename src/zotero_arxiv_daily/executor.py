@@ -179,9 +179,9 @@ class Executor:
         started = self.started = monotonic()
         dry_run = bool(self.config.executor.get('dry_run', False))
         report = self.report = {'status': 'processing', 'windows': {}, 'retrieved_count': 0,
-                  'candidate_count': 0, 'selected_count': 0,
-                  'summaries_reused': 0, 'summaries_generated': 0,
-                  'failed_count': 0, 'dry_run': dry_run}
+                                'candidate_count': 0, 'selected_count': 0,
+                                'summaries_reused': 0, 'summaries_generated': 0,
+                                'failed_count': 0, 'dry_run': dry_run}
         all_papers = []
         with self._stage(report, 'retrieval'):
             if self.history_enabled:
@@ -248,9 +248,10 @@ class Executor:
                 report['status'] = 'summary_failed'
                 self._write_report(report, started)
                 raise RuntimeError(f"{report['failed_count']} selected papers failed; email was not sent. Rerun to resume.")
-            if self.config.llm.get('strict_summary', False) and any(
-                    not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
-                raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
+            with self._stage(report, 'summaries'):
+                if self.config.llm.get('strict_summary', False) and any(
+                        not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
+                    raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
         if not ranked and not self.config.executor.send_empty:
             # Candidates judged irrelevant were still evaluated, so coverage advances.
             if self.history_enabled and not dry_run:
