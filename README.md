@@ -172,7 +172,7 @@ That's all! Now you can test the workflow by manually triggering it:
 
 Then check the log and the receiver email after it finishes.
 
-In this physics fork, the main workflow runs weekly on Monday at 08:15 Asia/Shanghai (00:15 UTC). The trigger can be delayed by GitHub. Change `.github/workflows/main.yml` to choose another schedule; see DEPLOYMENT.md for the actual retrieval window and recovery behavior.
+In this physics fork, the main workflow runs weekly on Monday at 09:37 Asia/Shanghai (01:37 UTC). The trigger can be delayed by GitHub. Change `.github/workflows/main.yml` to choose another schedule; see DEPLOYMENT.md for the actual retrieval window and recovery behavior.
 
 ### Local Running
 Supported by [uv](https://github.com/astral-sh/uv), this workflow can easily run on your local device if uv is installed:
