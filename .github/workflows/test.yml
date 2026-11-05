@@ -2,6 +2,10 @@ name: Test
 on:
   workflow_dispatch:
     inputs:
+      llm_probe:
+        description: Run only a minimal LLM availability probe without library access or email
+        type: boolean
+        default: false
       summary_only:
         description: Retest summaries without repeating the unchanged CPU ranking
         type: boolean
@@ -21,8 +25,36 @@ concurrency:
   group: literature-verification
   cancel-in-progress: false
 jobs:
+  probe:
+    if: inputs.llm_probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Apply non-sensitive configuration override
+        env:
+          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+        run: uv run --frozen scripts/apply_config_override.py
+      - name: Probe configured LLM
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+        run: uv run --frozen scripts/probe_llm.py --output verification/llm-probe.json
+      - name: Upload LLM probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-probe
+          path: verification/llm-probe.json
+          if-no-files-found: ignore
+          retention-days: 14
   replay:
-    if: inputs.replay_run_id != ''
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id != '' }}
     uses: ./.github/workflows/replay.yml
     with:
       run_id: ${{ inputs.replay_run_id }}
@@ -30,7 +62,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
   verify:
-    if: inputs.replay_run_id == ''
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
