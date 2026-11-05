@@ -162,6 +162,31 @@ def test_review_downgrades_are_visible_as_exploration(status, notice):
     assert notice in render_email([paper], reading_context())
 
 
+def test_downgraded_card_labels_provisional_use_and_displays_escaped_review_correction():
+    reason = '可借鉴峰分离；迁移到目标测量的适用性待验证。<script>unsafe</script>'
+    paper = reading_paper('Method under review', 'explore',
+                          relevance_review={'status': 'downgraded', 'reason': reason}, tldr=None)
+    paper.relevance_details['use'] = '可直接用于目标测量'
+    html = render_email([paper], reading_context())
+    assert '初筛用途（正文片段未确认）：</strong>可直接用于目标测量' in html
+    assert '复核理由：可借鉴峰分离；迁移到目标测量的适用性待验证。' in html
+    assert '&lt;script&gt;unsafe&lt;/script&gt;' in html and '<script>' not in html
+    text = html_to_text(html)
+    assert '初筛用途（正文片段未确认）' in text and '适用性待验证' in text
+
+
+@pytest.mark.parametrize('status,notice', [
+    ('unavailable', '正文不可用，保留为拓展阅读'),
+    ('confirmed', '正文片段复核通过'),
+])
+def test_unavailable_or_confirmed_review_does_not_claim_substantive_downgrade(status, notice):
+    paper = reading_paper('Explore method', 'explore',
+                          relevance_review={'status': status, 'reason': 'Review detail'}, tldr=None)
+    html = render_email([paper], reading_context())
+    assert notice in html and '可以怎样用' in html
+    assert '初筛用途（正文片段未确认）' not in html and '复核理由' not in html
+
+
 @pytest.mark.parametrize('tier', ['focus', 'explore'])
 @pytest.mark.parametrize('status', ['rejected', 'failed', 'skipped'])
 def test_bad_review_status_never_reaches_cards(tier, status):

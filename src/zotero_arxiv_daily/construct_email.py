@@ -213,9 +213,11 @@ def _reading_value_card(paper, details, focus):
     if paper.affiliations:
         affiliations = list(paper.affiliations[:5]) + (['...'] if len(paper.affiliations) > 5 else [])
         parts.append('<tr><td style="font-size:14px;color:#666;">' + escape(', '.join(affiliations)) + '</td></tr>')
+    explore_use_label = ('初筛用途（正文片段未确认）'
+                         if paper.relevance_review.get('status') == 'downgraded' else '可以怎样用')
     fields = [('推荐给你的原因', details['use']), ('对应问题', details['target']),
               ('实际贡献', details['contribution'])] if focus else [
-                  ('实际贡献', details['contribution']), ('可以怎样用', details['use'])]
+                  ('实际贡献', details['contribution']), (explore_use_label, details['use'])]
     for name, value in fields:
         parts.append(f'<tr><td style="padding:4px 0;"><strong>{name}：</strong>{escape(value)}</td></tr>')
     evidence_label = '摘要依据' if ' '.join(details['evidence'].split()) in ' '.join(paper.abstract.split()) else '标题依据'
@@ -237,9 +239,13 @@ def _reading_value_card(paper, details, focus):
         note = '依据标题与摘要筛选，未作正文片段复核。'
         if paper.relevance_review.get('status') in {'downgraded', 'unavailable'}:
             note = '正文片段复核后降为拓展阅读。' if paper.relevance_review['status'] == 'downgraded' else '正文不可用，保留为拓展阅读。'
+            if paper.relevance_review['status'] == 'downgraded':
+                reason = paper.relevance_review.get('reason')
+                if isinstance(reason, str) and reason.strip():
+                    note += '复核理由：' + reason.strip()
         elif paper.relevance_review.get('status') == 'confirmed':
             note = '依据标题与摘要保留为拓展阅读；正文片段复核通过。'
-        parts.append('<tr><td style="font-size:12px;color:#777;">' + note + '</td></tr>')
+        parts.append('<tr><td style="font-size:12px;color:#777;">' + escape(note) + '</td></tr>')
     trace = []
     if paper.recommendation_theme:
         trace.append('匹配收藏夹：' + paper.recommendation_theme)
