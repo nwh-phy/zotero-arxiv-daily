@@ -57,6 +57,10 @@ class Paper:
     relevance_score: Optional[int] = None
     relevance_reason: Optional[str] = None
     relevance_status: Optional[str] = None  # scored, failed or skipped; None when not shortlisted
+    relevance_details: dict = field(default_factory=dict)
+    recommendation_tier: Optional[str] = None  # focus or explore under the reading-value policy
+    relevance_review: dict = field(default_factory=dict)
+    shortlist_sources: list[str] = field(default_factory=list)
 
     def _generate_tldr_with_llm(self, openai_client:OpenAI,llm_params:dict) -> str:
         lang = llm_params.get('language', 'English')

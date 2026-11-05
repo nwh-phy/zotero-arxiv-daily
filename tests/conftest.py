@@ -52,6 +52,7 @@ def _base_config():
                 "executor.output_dir=null",
                 "reranker.ranking.mode=legacy",
                 "reranker.relevance.enabled=false",
+                "reranker.relevance.policy=score",
                 "executor.send_empty=false",
             ],
         )

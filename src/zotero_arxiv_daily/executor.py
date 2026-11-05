@@ -14,7 +14,7 @@ import os
 import re
 from time import monotonic
 from .reranker import get_reranker_cls
-from .construct_email import render_email, html_to_text
+from .construct_email import render_email, html_to_text, assert_reading_value_delivery
 from .utils import send_email, EmailDeliveryError
 from openai import OpenAI
 from tqdm import tqdm
@@ -220,9 +220,27 @@ class Executor:
             with self._stage(report, 'relevance'):
                 ranked = self._select(ordered, report)
             self._write_evaluation(ordered, ranked, report)
+            reading_value = (self.config.reranker.get('relevance') or {}).get('policy', 'score') == 'reading_value'
+            reading_value = reading_value and bool((self.config.reranker.get('relevance') or {}).get('enabled'))
+            if reading_value:
+                if not report['relevance'].get('complete', False):
+                    report.update(status='relevance_incomplete', selected_count=len(ranked), corpus_count=len(corpus))
+                    self._write_report(report, started)
+                    raise RuntimeError('Reading-value screening incomplete; delivery and coverage are unchanged. Rerun to resume.')
+                with self._stage(report, 'reading_review'):
+                    ranked = self._review_reading_value(ranked, report)
+                self._archive_candidates(ordered, ranked, report)
+                self._write_evaluation(ordered, ranked, report)
+                if not report['reading_review']['complete']:
+                    report.update(status='review_incomplete', selected_count=len(ranked), corpus_count=len(corpus))
+                    self._write_report(report, started)
+                    raise RuntimeError('Reading-value body review incomplete; delivery and coverage are unchanged. Rerun to resume.')
             report['selected_count'] = len(ranked)
             report['corpus_count'] = len(corpus)
             for paper in tqdm(ranked):
+                if reading_value and paper.recommendation_tier == 'explore':
+                    # Exploration uses the validated contribution/use and its abstract quote.
+                    continue
                 try:
                     reused = self.progress.restore(paper, self.config.llm)
                     if reused:
@@ -230,7 +248,7 @@ class Executor:
                     else:
                         retriever = self.retrievers.get(paper.source)
                         with self._stage(report, 'extraction'):
-                            if (not self.progress.has_extraction(paper) and retriever is not None
+                            if (not paper.full_text and not self.progress.has_extraction(paper) and retriever is not None
                                     and hasattr(retriever, 'enrich_selected')):
                                 retriever.enrich_selected(paper)
                             self.progress.save(paper, self.config.llm, status='extracted')
@@ -250,7 +268,8 @@ class Executor:
                 raise RuntimeError(f"{report['failed_count']} selected papers failed; email was not sent. Rerun to resume.")
             with self._stage(report, 'summaries'):
                 if self.config.llm.get('strict_summary', False) and any(
-                        not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked):
+                        not paper.summary_is_acceptable(paper.tldr, self.config.llm) for paper in ranked
+                        if not reading_value or paper.recommendation_tier == 'focus'):
                     raise RuntimeError('Selected summaries did not pass validation; email was not sent.')
         if not ranked and not self.config.executor.send_empty:
             # Candidates judged irrelevant were still evaluated, so coverage advances.
@@ -260,11 +279,16 @@ class Executor:
             self._write_report(report, started)
             logger.info('No paper to recommend. No email will be sent.')
             return
+        if (report.get('relevance') or {}).get('policy') == 'reading_value':
+            with self._stage(report, 'selection_validation'):
+                assert_reading_value_delivery(ranked, report)
         html = render_email(ranked, report)
         report['papers'] = [{'title': p.title, 'url': p.url, 'score': p.score,
                              'selection_score': p.selection_score, 'theme': p.recommendation_theme,
                              'relevance_score': p.relevance_score, 'relevance_reason': p.relevance_reason,
                              'relevance_status': p.relevance_status,
+                             'relevance_details': p.relevance_details, 'recommendation_tier': p.recommendation_tier,
+                             'relevance_review': p.relevance_review, 'shortlist_sources': p.shortlist_sources,
                              'evidence_sections': [{'id': e['id'], 'section': e['section']} for e in p.evidence_excerpts]}
                             for p in ranked]
         if dry_run:
@@ -317,9 +341,13 @@ class Executor:
             return
         reranker = self.config.executor.reranker
         relevance = self.config.reranker.get('relevance') or {}
+        version, digest = RELEVANCE_VERSION, PROMPT_DIGEST
+        if relevance.get('policy') == 'reading_value':
+            from .reading_value import READING_VALUE_VERSION, PROMPT_DIGEST as reading_digest
+            version, digest = READING_VALUE_VERSION, reading_digest
         settings = {'ranking': OmegaConf.to_container(self.config.reranker.get('ranking') or {}, resolve=True),
                     'relevance': {**OmegaConf.to_container(relevance, resolve=True),
-                                  'prompt_digest': PROMPT_DIGEST, 'version': RELEVANCE_VERSION},
+                                  'prompt_digest': digest, 'version': version},
                     'embedding': f"{reranker}:{(self.config.reranker.get(reranker) or {}).get('model')}",
                     'llm_model': self.config.llm.generation_kwargs.get('model'),
                     'max_paper_num': int(self.config.executor.max_paper_num),
@@ -341,14 +369,49 @@ class Executor:
                                                                options, limit, cache=self.progress)
         else:
             selected = ranked[:limit]
+        self._archive_candidates(ranked, selected, report)
+        return selected
+
+    def _archive_candidates(self, ranked, selected, report):
         chosen = {id(p) for p in selected}
         # Every ranked candidate is archived so ranking changes can be compared offline.
         report['candidates'] = [{'id': paper_identity(p), 'title': p.title, 'score': p.score,
                                  'theme': p.recommendation_theme, 'relevance_score': p.relevance_score,
                                  'relevance_reason': p.relevance_reason, 'relevance_status': p.relevance_status,
+                                 'relevance_details': p.relevance_details, 'recommendation_tier': p.recommendation_tier,
+                                 'relevance_review': p.relevance_review, 'shortlist_sources': p.shortlist_sources,
                                  'selected': id(p) in chosen}
                                 for p in ranked]
-        return selected
+
+    def _review_reading_value(self, selected, report):
+        from .reading_review import ReadingReview
+        from .reading_value import choose_reading_value
+        options = self.config.reranker.relevance
+        reviewer = ReadingReview(self.openai_client, self.config.llm, options.get('fulltext_review') or {}, self.progress)
+        report['reading_review'] = reviewer.stats
+        for paper in selected:
+            if paper.recommendation_tier != 'focus':
+                continue
+            try:
+                reused = self.progress.restore(paper, self.config.llm)
+                if not reused:
+                    retriever = self.retrievers.get(paper.source)
+                    with self._stage(report, 'extraction'):
+                        if (not paper.full_text and not self.progress.has_extraction(paper)
+                                and retriever is not None and hasattr(retriever, 'enrich_selected')):
+                            retriever.enrich_selected(paper)
+                        self.progress.save(paper, self.config.llm, status='extracted')
+                reviewer.review(paper)
+            except Exception as exc:
+                reviewer.stats['attempted'] += 1
+                reviewer._finish(paper, {'status': 'failed', 'reason': '正文提取或复核失败，等待重试。'})
+                logger.warning('Reading review processing failed ({})', type(exc).__name__)
+        # Review the proposed focus set only; do not promote unreviewed reserves to fill a quota.
+        result = choose_reading_value(selected, options, int(self.config.executor.max_paper_num))
+        report['relevance'].update(selected=len(result), selected_unscored=0,
+                                   focus_count=sum(p.recommendation_tier == 'focus' for p in result),
+                                   explore_count=sum(p.recommendation_tier == 'explore' for p in result))
+        return result
 
     def _previous_delivery(self):
         last = self.history.data.get('last_delivery') if self.history_enabled else None

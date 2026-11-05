@@ -5,6 +5,7 @@ reference library as ranked (title, date, theme paths), the embedding similarity
 effective settings, so ranking options can be compared on a fixed sample without the model or API.
 """
 import base64
+import copy
 import csv
 from datetime import datetime
 
@@ -15,23 +16,77 @@ from .history import paper_identity
 from .protocol import CorpusPaper, Paper
 from .reranker.base import BaseReranker
 
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 # 精读 = worth reading closely, 浏览 = worth browsing, 不相关 = not relevant.
 LABELS = {'精读': 2, '浏览': 1, '不相关': 0}
 
 
 def build_bundle(candidates, ordered, selected, corpus, similarity, settings, window):
     rank = {id(p): i + 1 for i, p in enumerate(ordered)}
-    chosen = {id(p) for p in selected}
+    chosen = {id(p): i + 1 for i, p in enumerate(selected)}
     return {'schema': BUNDLE_VERSION, 'window': window, 'settings': settings,
-            'candidates': [{'id': paper_identity(p), 'title': p.title, 'abstract': p.abstract,
+            'candidates': [{'id': paper_identity(p), 'source': p.source, 'url': p.url,
+                            'title': p.title, 'abstract': p.abstract,
                             'stage1_rank': rank[id(p)], 'score': p.score, 'selection_score': p.selection_score,
                             'theme': p.recommendation_theme, 'relevance_score': p.relevance_score,
                             'relevance_reason': p.relevance_reason, 'relevance_status': p.relevance_status,
-                            'selected': id(p) in chosen} for p in candidates],
+                            'relevance_details': copy.deepcopy(getattr(p, 'relevance_details', {})),
+                            'recommendation_tier': getattr(p, 'recommendation_tier', None),
+                            'relevance_review': copy.deepcopy(getattr(p, 'relevance_review', {})),
+                            'shortlist_sources': list(getattr(p, 'shortlist_sources', [])),
+                            'selected': id(p) in chosen, 'selected_rank': chosen.get(id(p))}
+                           for p in candidates],
             'corpus': [{'title': c.title, 'added_date': c.added_date.isoformat(),
                         'theme_paths': c.paths if c.theme_paths is None else c.theme_paths} for c in corpus],
             'similarity': encode_matrix(similarity)}
+
+
+def restore_candidates(bundle):
+    """Restore public candidates in stage-1 order, including schema-1 bundles.
+
+    No embedding, full text, summary or service configuration is loaded. Older
+    records identify the source in ``id`` instead of separate source/URL fields.
+    """
+    candidates = bundle.get('candidates')
+    if not isinstance(candidates, list):
+        raise ValueError('Evaluation bundle must contain candidates')
+    result = []
+    for candidate in candidates:
+        if (not isinstance(candidate, dict)
+                or not isinstance(candidate.get('id'), str)
+                or not isinstance(candidate.get('title'), str)
+                or not isinstance(candidate.get('abstract'), str)
+                or isinstance(candidate.get('stage1_rank'), bool)
+                or not isinstance(candidate.get('stage1_rank'), int)
+                or candidate['stage1_rank'] < 1):
+            raise ValueError('Invalid evaluation candidate')
+        if (not isinstance(candidate.get('relevance_details') or {}, dict)
+                or not isinstance(candidate.get('relevance_review') or {}, dict)
+                or not isinstance(candidate.get('shortlist_sources') or [], list)
+                or any(not isinstance(value, str) for value in candidate.get('shortlist_sources') or [])):
+            raise ValueError('Invalid structured evaluation fields')
+        source, separator, identity = candidate['id'].partition(':')
+        if not separator or not source or not identity:
+            raise ValueError('Invalid evaluation candidate identity')
+        url = candidate.get('url') or (
+            f'https://arxiv.org/abs/{identity}' if source == 'arxiv' else identity)
+        if candidate.get('source', source) != source or not isinstance(url, str):
+            raise ValueError('Invalid evaluation candidate source')
+        paper = Paper(source=source, title=candidate['title'], abstract=candidate['abstract'],
+                      authors=[], url=url, score=candidate.get('score'),
+                      selection_score=candidate.get('selection_score'),
+                      recommendation_theme=candidate.get('theme'),
+                      relevance_score=candidate.get('relevance_score'),
+                      relevance_reason=candidate.get('relevance_reason'),
+                      relevance_status=candidate.get('relevance_status'),
+                      relevance_details=copy.deepcopy(candidate.get('relevance_details') or {}),
+                      recommendation_tier=candidate.get('recommendation_tier'),
+                      relevance_review=copy.deepcopy(candidate.get('relevance_review') or {}),
+                      shortlist_sources=list(candidate.get('shortlist_sources') or []))
+        if paper_identity(paper) != candidate['id']:
+            raise ValueError('Evaluation candidate identity does not match its source/URL')
+        result.append((candidate['stage1_rank'], paper))
+    return [paper for _, paper in sorted(result, key=lambda item: item[0])]
 
 
 def encode_matrix(matrix):

@@ -10,13 +10,27 @@ on:
         description: Send one explicitly labelled deployment test email after verification passes
         type: boolean
         default: false
+      replay_run_id:
+        description: Optional historical run ID; run only reading-value abstract replay, without delivery verification
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: literature-verification
   cancel-in-progress: false
 jobs:
+  replay:
+    if: inputs.replay_run_id != ''
+    uses: ./.github/workflows/replay.yml
+    with:
+      run_id: ${{ inputs.replay_run_id }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
   verify:
+    if: inputs.replay_run_id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:

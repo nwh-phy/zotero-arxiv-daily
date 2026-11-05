@@ -17,9 +17,20 @@ else:
                        ('Duration (seconds)', 'duration_seconds')]:
         print(f'- {label}: {report.get(key, 0)}')
     if relevance := report.get('relevance'):
-        print(f"- LLM relevance: {relevance.get('mode')}; attempted {relevance.get('attempted', 0)}, "
-              f"scored {relevance.get('scored', 0)}, passed threshold {relevance.get('passed_threshold', 0)}, "
-              f"failed {relevance.get('failed', 0)}, selected unscored {relevance.get('selected_unscored', 0)}")
+        if relevance.get('policy') == 'reading_value':
+            print(f"- Reading value: {relevance.get('mode')}; complete {relevance.get('complete', False)}, "
+                  f"attempted {relevance.get('attempted', 0)}, scored {relevance.get('scored', 0)}, "
+                  f"focus {relevance.get('focus_count', 0)}, explore {relevance.get('explore_count', 0)}, "
+                  f"failed {relevance.get('failed', 0)}, skipped {relevance.get('skipped', 0)}, "
+                  f"reused {relevance.get('reused', 0)}")
+        else:
+            print(f"- LLM relevance: {relevance.get('mode')}; attempted {relevance.get('attempted', 0)}, "
+                  f"scored {relevance.get('scored', 0)}, passed threshold {relevance.get('passed_threshold', 0)}, "
+                  f"failed {relevance.get('failed', 0)}, selected unscored {relevance.get('selected_unscored', 0)}")
+    if review := report.get('reading_review'):
+        print(f"- Full-text reading review: complete {review.get('complete', False)}; "
+              + ', '.join(f"{key} {review.get(key, 0)}" for key in (
+                  'attempted', 'confirmed', 'downgraded', 'rejected', 'unavailable', 'failed', 'skipped', 'reused')))
     if previous := report.get('previous_delivery'):
         print(f"- Previous brief saved to Zotero: {previous.get('saved', 0)}/{previous.get('delivered', 0)}")
     print()

@@ -1,0 +1,53 @@
+name: Preview reading-value selection from an archived week
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      OPENAI_API_BASE:
+        required: true
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Historical weekly run containing an unexpired weekly-brief-report artifact
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: reading-value-preview
+  cancel-in-progress: false
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Download archived candidates from this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'run_id must be numeric'; exit 1; }
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name weekly-brief-report --dir verification/replay-source
+      - name: Re-evaluate abstracts with the checked-out research profile
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+        run: uv run --frozen scripts/replay_reading_value.py verification/replay-source/evaluation.json --live --output verification/reading-value-replay
+      - name: Upload provisional selection comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reading-value-comparison
+          path: verification/reading-value-replay/
+          if-no-files-found: ignore
+          retention-days: 14

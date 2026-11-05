@@ -6,6 +6,8 @@
   uv run --frozen scripts/evaluate_ranking.py BUNDLE --labels labels.csv --set theme_penalty=0.02 --set mode=legacy
 
 Only stage 1 (embedding ranking) can be replayed; LLM judgements exist only for the recorded shortlist.
+For a new reading-value shortlist plan or explicit live abstract-screening comparison,
+use scripts/replay_reading_value.py; this command always remains offline.
 """
 import argparse
 import json
@@ -28,6 +30,16 @@ if not args.labels:
     raise SystemExit('Pass --template to create a label file or --labels to score one')
 labels = read_labels(args.labels)
 result = {'labelled': len(labels), 'recorded': score(bundle, labels)}
+if any(c.get('recommendation_tier') or c.get('relevance_review') for c in bundle['candidates']):
+    selected = [c for c in bundle['candidates'] if c['selected']]
+    result['recorded_policy'] = {
+        'policy': bundle.get('settings', {}).get('relevance', {}).get('policy', 'score'),
+        'focus_count': sum(c.get('recommendation_tier') == 'focus' for c in selected),
+        'explore_count': sum(c.get('recommendation_tier') == 'explore' for c in selected),
+        'review_status': {status: sum(c.get('relevance_review', {}).get('status') == status for c in selected)
+                          for status in sorted({c.get('relevance_review', {}).get('status')
+                                                for c in selected} - {None})},
+    }
 if args.set:
     overrides = {}
     for item in args.set:

@@ -63,21 +63,38 @@ reranker:
     mode: theme_balanced
   relevance:
     enabled: true
-    top_k: 30
+    policy: reading_value
+    top_k: 60
     min_score: 3
-    # Worst case of the stage is about 15 minutes instead of 30 papers x 3 attempts x 90 s.
+    focus_limit: 6
+    explore_limit: 2
+    shortlist:
+      embedding_k: 40
+      core_k: 20
+      core_patterns:
+        - '\b(?:q[- ]?eels|4d[- ]?eels|m[- ]?eels|stem[- ]?eels)\b'
+        - '\bEELS\b|\belectron[- ]energy[- ]loss\b'
+        - '\b(?:momentum[- ]resolved|inelastic) electron scattering\b'
+        - '\bTaSe(?:\s|[$_{}])*2\b|\b(?:tantalum diselenide)\b'
+        - '\b(?:encapsulated|confined|monolayer|two[- ]dimensional|2d) metals?\b'
+        - '\bloss function\b|\bdielectric response\b'
+    # Bounded abstract screening; successful judgements are cached if a run needs to resume.
     time_budget_seconds: 900
     request_timeout: 90
     max_retries: 1
     max_consecutive_failures: 5
     max_tokens: 4096 # Value verified in preview 39400559220; lowering it needs a new preview
     profile: >-
-      实验凝聚态物理与先进电子显微学研究者。核心方向：用单色化 STEM-EELS 与动量分辨 EELS（q-EELS、4D-EELS）测量低能集体激发及其色散，
-      包括等离激元、声子、激子以及声子/等离激元极化激元；振动 EELS、界面与缺陷处的局域声子、纳米声子学与界面热输运；
-      二维金属与低维量子材料中的集体激发和电子-声子耦合；电荷密度波；手性声子与拓扑声子；EELS 去背景与谱学数据的智能分析；
-      电子非弹性散射与电镜理论；原位电镜与液氦低温电镜。
-      高价值：新的谱学或电镜方法，以及在上述体系中测量或计算集体激发、色散与电子-声子耦合的工作；ARPES、拉曼、光学等其他谱学得到的相关集体激发结果也有参考价值。
-      低价值：与这些物理问题无关的器件工艺、材料生长优化、冷原子与原子光学、生物或化学合成，以及仅把电镜当作常规表征手段的工作。
+      【长期方向】实验凝聚态物理与先进电子显微学。关注单色化 STEM-EELS、q-EELS、4D-EELS、振动 EELS，
+      低维材料的集体激发、介电响应与色散，以及可迁移的电镜实验和谱学分析方法。
+      【当前问题】范德华封装二维金属与类似异质结的屏蔽、损失函数、等离激元及其他激发归属、层数和动量依赖；
+      2H-TaSe2 及可比 CDW 体系在室温至液氮温区的激发与谱权重变化、变温动量分辨 EELS；
+      动量和能量分辨、仪器响应、零损失峰与背景、谱峰分离、色散提取和不确定度。
+      【方法进展】可用于上述测量或解释的新实验几何、探测器、校准、非弹性散射理论、响应函数计算、谱学数据分析和可用数据集。
+      其他材料、理论、ARPES、拉曼和光学工作，只要有具体可迁移的响应、判据或方法，也可以重点推荐。
+      【拓展兴趣】手性/拓扑声子、界面振动与热输运、原位及低温电镜的新进展。仅与这些宽泛主题沾边不构成重点推荐理由。
+      每篇须指出论文实际贡献、对应的具体问题及可借鉴之处，并摘取标题或摘要中的逐字依据。
+      只出现激子、声子、电声耦合、二维等共同词而缺乏具体联系的文章，应排除；常规电镜表征、无关器件工艺、生长优化也不推荐。
   local:
     model: jinaai/jina-embeddings-v5-text-nano-retrieval
     device: cpu
@@ -101,5 +118,5 @@ executor:
   debug: false
   source: ['arxiv']
   reranker: local
-  max_paper_num: 10
+  max_paper_num: 8
   send_empty: false
