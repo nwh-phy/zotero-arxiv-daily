@@ -2,6 +2,10 @@ name: Test
 on:
   workflow_dispatch:
     inputs:
+      llm_probe:
+        description: Run only a minimal LLM availability probe without library access or email
+        type: boolean
+        default: false
       summary_only:
         description: Retest summaries without repeating the unchanged CPU ranking
         type: boolean
@@ -10,13 +14,67 @@ on:
         description: Send one explicitly labelled deployment test email after verification passes
         type: boolean
         default: false
+      replay_run_id:
+        description: Optional historical run ID; run only reading-value abstract replay, without delivery verification
+        type: string
+        default: ''
+      body_replay_run_id:
+        description: Optional completed-screening weekly run ID; retry only original focus body review and strict summaries
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: literature-verification
   cancel-in-progress: false
 jobs:
+  probe:
+    if: ${{ inputs.llm_probe && inputs.body_replay_run_id == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Apply non-sensitive configuration override
+        env:
+          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+        run: uv run --frozen scripts/apply_config_override.py
+      - name: Probe configured LLM
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+        run: uv run --frozen scripts/probe_llm.py --output verification/llm-probe.json
+      - name: Upload LLM probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-probe
+          path: verification/llm-probe.json
+          if-no-files-found: ignore
+          retention-days: 14
+  replay:
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id != '' && inputs.body_replay_run_id == '' }}
+    uses: ./.github/workflows/replay.yml
+    with:
+      run_id: ${{ inputs.replay_run_id }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+  body-replay:
+    if: ${{ inputs.body_replay_run_id != '' }}
+    uses: ./.github/workflows/body-replay.yml
+    with:
+      run_id: ${{ inputs.body_replay_run_id }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
   verify:
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id == '' && inputs.body_replay_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:

@@ -122,6 +122,32 @@ class PaperProgress:
         judgement = {'score': score, 'reason': reason}
         self._write(f'relevance-{key}.json', {'key': key, 'judgement': judgement, 'checksum': _digest(judgement)})
 
+    def load_reading_value(self, key):
+        """Return a validated structured judgement; the caller also checks its paper evidence."""
+        if self.directory is None:
+            return None
+        try:
+            from .reading_value import READING_VALUE_VERSION, validate_judgement
+            record = json.loads((self.directory / f'reading-value-{key}.json').read_text())
+            judgement = record['judgement']
+            if (record.get('key') != key or record.get('schema') != READING_VALUE_VERSION
+                    or record.get('checksum') != _digest(judgement)):
+                raise ValueError('Invalid reading-value cache record')
+            return validate_judgement(judgement)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            logger.warning('Unreadable reading-value cache entry; the paper will be judged again')
+            return None
+
+    def save_reading_value(self, key, judgement):
+        if self.directory is None:
+            return
+        from .reading_value import READING_VALUE_VERSION, validate_judgement
+        judgement = validate_judgement(judgement)
+        self._write(f'reading-value-{key}.json', {'schema': READING_VALUE_VERSION, 'key': key, 'judgement': judgement,
+                                                'checksum': _digest(judgement)})
+
     def _write(self, name, record):
         temporary = None
         try:

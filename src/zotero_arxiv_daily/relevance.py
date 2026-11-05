@@ -48,6 +48,12 @@ def judge(openai_client, llm_params, profile, paper):
 
 def select(papers, openai_client, llm_params, options, limit, cache=None):
     """Judge the shortlist within a time budget and keep papers at or above min_score, best first."""
+    policy = options.get('policy', 'score')
+    if policy == 'reading_value':
+        from .reading_value import select_reading_value
+        return select_reading_value(papers, openai_client, llm_params, options, limit, cache)
+    if policy != 'score':
+        raise ValueError('Unknown relevance policy')
     profile = options.get('profile')
     if not profile or not str(profile).strip():
         raise ValueError('reranker.relevance.profile is required when relevance ranking is enabled')

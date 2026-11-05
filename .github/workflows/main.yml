@@ -6,6 +6,10 @@ on:
         description: Generate a preview without email or advancing delivery coverage
         type: boolean
         default: false
+      repository_recommendations:
+        description: Preview recommendation settings from the selected branch while retaining other configured settings
+        type: boolean
+        default: false
   schedule:
     - cron: '37 1 * * 1'
 permissions:
@@ -41,7 +45,7 @@ jobs:
       - name: Apply non-sensitive configuration override
         env:
           CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
-        run: uv run --frozen scripts/apply_config_override.py
+        run: uv run --frozen scripts/apply_config_override.py ${{ inputs.dry_run && inputs.repository_recommendations && '--repository-recommendations' || '' }}
       - name: Check required credentials
         run: uv run --frozen scripts/preflight.py
       - name: Beijing delivery date

@@ -3,10 +3,16 @@ import re
 
 import tiktoken
 
-EVIDENCE_VERSION = 2
+EVIDENCE_VERSION = 3
 
 # Headings such as \section{\label{sec:x}Results} or \section{MoS$_{2}$} nest braces two levels deep.
 _TEX_HEADING = re.compile(r"\\(?:sub)*section\*?(?:\[[^\]]*\])?\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})+)\}")
+# Short letters often use run-in headings in the main text and \section only
+# in the supplement. Ignoring these headings would select the supplement alone.
+_TEX_RUN_IN_HEADING = re.compile(
+    r"^[ \t]*\\(?:textit|textbf)\{([^{}\n]{1,160})\}[ \t]*(?:---|—|–)[ \t]*",
+    re.MULTILINE,
+)
 _TEX_LABEL = re.compile(r"\\label\{[^{}]*\}")
 _BACK_MATTER = ("reference", "bibliograph", "acknowledg", "data availability", "author declaration",
                 "author contribution", "contributed equally", "competing interest", "conflict of interest",
@@ -39,13 +45,14 @@ def select_excerpts(text: str, token_budget: int = 2600) -> list[dict[str, str]]
     if not text or token_budget <= 0:
         return []
     # Drop TeX preamble and comments before finding section boundaries.
-    if r"\begin{document}" in text or _TEX_HEADING.search(text):
+    if r"\begin{document}" in text or _TEX_HEADING.search(text) or _TEX_RUN_IN_HEADING.search(text):
         text = re.sub(r"(?<!\\)%[^\n]*", "", text)
     if r"\begin{document}" in text:
         text = text.split(r"\begin{document}", 1)[1]
     text = text.split(r"\end{document}", 1)[0]
     matches = sorted(
-        [*_TEX_HEADING.finditer(text), *_MARKDOWN_HEADING.finditer(text), *_PLAIN_HEADING.finditer(text)],
+        [*_TEX_HEADING.finditer(text), *_TEX_RUN_IN_HEADING.finditer(text),
+         *_MARKDOWN_HEADING.finditer(text), *_PLAIN_HEADING.finditer(text)],
         key=lambda match: match.start(),
     )
     sections = []

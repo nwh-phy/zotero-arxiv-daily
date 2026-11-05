@@ -133,6 +133,38 @@ def test_unstructured_text_includes_end_and_reference_only_has_no_evidence():
     assert '只能使用[摘要确认]' in prompt
 
 
+def test_letter_run_in_headings_keep_main_results_ahead_of_supplement():
+    text = (r'\begin{document}' + '\n' + r'\maketitle' + '\n'
+            + r'\textit{Introduction} --- MAIN_MOTIVATION' + '\n'
+            + r'\textit{Theory} --- MAIN_COOLING_MODEL' + '\n'
+            + r'\textit{Numerical tracking} --- MAIN_SIMULATION' + '\n'
+            + r'\textit{Discussion} --- MAIN_RESULT_AND_LIMITS' + '\n'
+            + r'\textit{Acknowledgments} --- PRIVATE_FUNDING' + '\n'
+            + r'\bibliography{refs}' + '\n'
+            + '\n'.join(r'\section{Supplement derivation ' + str(i) + '} SUPPLEMENT_ONLY'
+                        for i in range(6)) + '\n' + r'\end{document}')
+    paper = make_sample_paper(full_text=text)
+    prompt = build_summary_prompt(paper, 'Chinese')
+    assert paper.evidence_excerpts[0]['section'] == 'Discussion'
+    assert {e['section'] for e in paper.evidence_excerpts} == {
+        'Discussion', 'Theory', 'Introduction', 'Numerical tracking'}
+    assert all(value in prompt for value in (
+        'MAIN_MOTIVATION', 'MAIN_COOLING_MODEL', 'MAIN_SIMULATION', 'MAIN_RESULT_AND_LIMITS'))
+    assert 'PRIVATE_FUNDING' not in prompt and 'SUPPLEMENT_ONLY' not in prompt
+    assert 'bibliography' not in prompt
+
+
+@pytest.mark.parametrize('separator', ['---', '—', '–'])
+def test_run_in_back_matter_is_excluded_without_treating_emphasis_as_a_heading(separator):
+    text = (r'\textbf{Results} ' + separator + ' OBSERVED_RESULT\n'
+            + r'\textit{An emphasized sentence} remains part of the result.' + '\n'
+            + r'\textbf{Data Availability} ' + separator + ' EXCLUDED_DATA_STATEMENT\n')
+    excerpts = select_excerpts(text)
+    assert len(excerpts) == 1 and excerpts[0]['section'] == 'Results'
+    assert 'An emphasized sentence' in excerpts[0]['text']
+    assert 'EXCLUDED_DATA_STATEMENT' not in excerpts[0]['text']
+
+
 def test_summary_cannot_cite_nonexistent_excerpt():
     paper = make_sample_paper(full_text='# Results\nA measured result')
     build_summary_prompt(paper, 'Chinese')
