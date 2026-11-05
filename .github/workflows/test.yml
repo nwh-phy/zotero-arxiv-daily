@@ -18,6 +18,10 @@ on:
         description: Optional historical run ID; run only reading-value abstract replay, without delivery verification
         type: string
         default: ''
+      body_replay_run_id:
+        description: Optional completed-screening weekly run ID; retry only original focus body review and strict summaries
+        type: string
+        default: ''
 permissions:
   contents: read
   actions: read
@@ -26,7 +30,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   probe:
-    if: inputs.llm_probe
+    if: ${{ inputs.llm_probe && inputs.body_replay_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -54,15 +58,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
   replay:
-    if: ${{ !inputs.llm_probe && inputs.replay_run_id != '' }}
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id != '' && inputs.body_replay_run_id == '' }}
     uses: ./.github/workflows/replay.yml
     with:
       run_id: ${{ inputs.replay_run_id }}
     secrets:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+  body-replay:
+    if: ${{ inputs.body_replay_run_id != '' }}
+    uses: ./.github/workflows/body-replay.yml
+    with:
+      run_id: ${{ inputs.body_replay_run_id }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
   verify:
-    if: ${{ !inputs.llm_probe && inputs.replay_run_id == '' }}
+    if: ${{ !inputs.llm_probe && inputs.replay_run_id == '' && inputs.body_replay_run_id == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:

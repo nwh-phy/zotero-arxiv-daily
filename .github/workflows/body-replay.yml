@@ -1,0 +1,66 @@
+name: Retry archived focus body review and summaries
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      OPENAI_API_BASE:
+        required: true
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Weekly run with completed abstract screening and an unexpired weekly-brief-report artifact
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: archived-body-review-preview
+  cancel-in-progress: false
+jobs:
+  body-replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Download read-only archived screening from this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'run_id must be numeric'; exit 1; }
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name weekly-brief-report --dir verification/body-replay-source
+          test -f verification/body-replay-source/evaluation.json
+          test -f verification/body-replay-source/report.json
+      - name: Apply checked-out recommendations while retaining configured provider model
+        env:
+          CUSTOM_CONFIG: ${{ vars.CUSTOM_CONFIG }}
+        run: uv run --frozen scripts/apply_config_override.py --repository-recommendations
+      - name: Retry only archived focus body review and strict summaries without delivery
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+        run: >-
+          uv run --frozen scripts/replay_body_review.py verification/body-replay-source/evaluation.json
+          --report verification/body-replay-source/report.json --live --output verification/body-replay
+      - name: Upload isolated body-review diagnostics and numbered public excerpts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archived-body-review-preview
+          path: |
+            verification/body-replay/report.json
+            verification/body-replay/review-evidence.json
+            verification/body-replay/brief.html
+            verification/body-replay/brief.txt
+            verification/body-replay/README.txt
+          if-no-files-found: ignore
+          retention-days: 14

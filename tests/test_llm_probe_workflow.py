@@ -15,10 +15,10 @@ def test_llm_probe_is_opt_in_and_excludes_other_test_jobs():
     assert probe_input['type'] == 'boolean'
     assert probe_input['default'] is False
     jobs = workflow['jobs']
-    assert jobs['probe']['if'] == 'inputs.llm_probe'
+    assert jobs['probe']['if'] == "${{ inputs.llm_probe && inputs.body_replay_run_id == '' }}"
     assert jobs['probe']['timeout-minutes'] == 5
-    assert jobs['replay']['if'] == "${{ !inputs.llm_probe && inputs.replay_run_id != '' }}"
-    assert jobs['verify']['if'] == "${{ !inputs.llm_probe && inputs.replay_run_id == '' }}"
+    assert jobs['replay']['if'] == "${{ !inputs.llm_probe && inputs.replay_run_id != '' && inputs.body_replay_run_id == '' }}"
+    assert jobs['verify']['if'] == "${{ !inputs.llm_probe && inputs.replay_run_id == '' && inputs.body_replay_run_id == '' }}"
     assert not jobs['probe'].get('needs')
 
 

@@ -28,23 +28,31 @@ def _normalized(text):
     return ' '.join(text.split())
 
 
+class ReviewValidationError(ValueError):
+    """A fixed diagnostic code, never model output or upstream error text."""
+
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
 def validate_review(data, excerpts):
     if not isinstance(data, dict) or data.get('status') not in {'confirmed', 'downgraded', 'rejected'}:
-        raise ValueError('Invalid reading review status')
+        raise ReviewValidationError('invalid_status')
     reason, evidence, ref = data.get('reason'), data.get('evidence'), data.get('evidence_id')
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
-        raise ValueError('Invalid reading review reason')
+        raise ReviewValidationError('invalid_reason')
     if not isinstance(evidence, str) or len(evidence) > 800:
-        raise ValueError('Invalid reading review evidence')
+        raise ReviewValidationError('invalid_evidence')
     bodies = {e['id']: e['text'] for e in excerpts}
     if ref is not None and (not isinstance(ref, str) or ref not in bodies):
-        raise ValueError('Unavailable reading review excerpt')
+        raise ReviewValidationError('unknown_excerpt')
     if bool(evidence.strip()) != bool(ref):
-        raise ValueError('Missing reading review evidence or excerpt')
+        raise ReviewValidationError('evidence_ref_mismatch')
     if ref and _normalized(evidence) not in _normalized(bodies[ref]):
-        raise ValueError('Reading review quote does not match excerpt')
+        raise ReviewValidationError('quote_mismatch')
     if data['status'] == 'confirmed' and (not ref or len(_normalized(evidence)) < 12):
-        raise ValueError('Confirmed reading review requires body evidence')
+        raise ReviewValidationError('confirmed_without_evidence')
     return {'status': data['status'], 'reason': reason.strip(),
             'evidence_id': ref, 'evidence': evidence.strip()}
 
@@ -62,7 +70,7 @@ class ReadingReview:
             raise ValueError('Invalid reading review bounds')
         self.client = client.with_options(timeout=self.timeout, max_retries=self.retries) if hasattr(client, 'with_options') else client
         self.started, self.consecutive = monotonic(), 0
-        self.stats = {'complete': True, 'attempted': 0, 'reused': 0,
+        self.stats = {'complete': True, 'attempted': 0, 'reused': 0, 'failure_codes': {},
                       **{key: 0 for key in ('confirmed', 'downgraded', 'rejected', 'unavailable', 'failed', 'skipped')}}
 
     def _load(self, key, excerpts):
@@ -88,6 +96,31 @@ class ReadingReview:
         self.stats['seconds'] = round(monotonic() - self.started, 2)
         return paper.relevance_review
 
+    def _failed(self, paper, code, *, error_type=None, diagnostics=None):
+        self.consecutive += 1
+        counts = self.stats['failure_codes']
+        counts[code] = counts.get(code, 0) + 1
+        safe = {'failure_code': code}
+        if error_type is not None:
+            safe['error_type'] = error_type
+        if diagnostics:
+            safe.update(diagnostics)
+        logger.warning('Reading review failed ({})', safe)
+        return self._finish(paper, {'status': 'failed', 'reason': '正文复核未成功，等待重试。', **safe})
+
+    @staticmethod
+    def _quote_diagnostics(data, paper):
+        # Validation has already established string evidence and a valid excerpt ID.
+        quote = _normalized(data['evidence'])
+        screening = paper.relevance_details.get('evidence')
+        return {
+            'matches_screening_evidence': (isinstance(screening, str)
+                                          and quote in _normalized(screening)),
+            'matches_other_excerpt': any(
+                excerpt['id'] != data['evidence_id'] and quote in _normalized(excerpt['text'])
+                for excerpt in paper.evidence_excerpts),
+        }
+
     def review(self, paper):
         self.stats['attempted'] += 1
         build_summary_prompt(paper, self.params.get('language', '简体中文'))
@@ -105,17 +138,22 @@ class ReadingReview:
         if (self.consecutive >= self.breaker
                 or monotonic() - self.started + self.timeout * (self.retries + 1) > self.budget):
             return self._finish(paper, {'status': 'skipped', 'reason': '正文复核预算或连续失败上限已达到，等待重试。'})
+        data = None
         try:
             text = _request_llm(self.client, self.params, [
                 {'role': 'system', 'content': _INSTRUCTIONS},
                 {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
             ])
             match = re.search(r'\{.*\}', text or '', re.DOTALL)
-            result = validate_review(json.loads(match.group(0)) if match else None, paper.evidence_excerpts)
+            data = json.loads(match.group(0)) if match else None
+            result = validate_review(data, paper.evidence_excerpts)
+        except json.JSONDecodeError:
+            return self._failed(paper, 'invalid_json')
+        except ReviewValidationError as exc:
+            diagnostics = self._quote_diagnostics(data, paper) if exc.code == 'quote_mismatch' else None
+            return self._failed(paper, exc.code, diagnostics=diagnostics)
         except Exception as exc:
-            self.consecutive += 1
-            logger.warning('Reading review failed ({})', type(exc).__name__)
-            return self._finish(paper, {'status': 'failed', 'reason': '正文复核未成功，等待重试。'})
+            return self._failed(paper, 'request_failed', error_type=type(exc).__name__)
         self.consecutive = 0
         if self.cache.directory is not None:
             self.cache._write(f'reading-review-{key}.json', {'key': key, 'review': result, 'checksum': _digest(result)})
