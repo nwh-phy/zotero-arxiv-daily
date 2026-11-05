@@ -18,9 +18,14 @@ _INSTRUCTIONS = '''你是物理文献推荐的证据复核员。复核给定推�
 confirmed：片段明确支持实际贡献，且用途有具体、合理的联系，并区分了论文已验证应用与适用性待验证的迁移设想；后者不必由论文作者亲自验证。
 downgraded：片段不足以支撑重点推荐，或术语、贡献、用途表述过强，但纠正后仍有具体阅读价值。把待验证迁移写成已证实或可直接应用时必须降级，在 reason 中说明可借鉴的具体环节及待验证前提。不得把没有出现在片段中当作论文没有做过。
 rejected：片段明确反驳推荐的关键贡献或用途，且纠正后推荐理由不成立。仅未验证目标技术不能成为拒绝有明确迁移任务的方法的理由。
-输出一个JSON对象：{"status":"confirmed|downgraded|rejected","reason":"简短中文理由",
-"evidence_id":"E1或null","evidence":"该片段中的逐字原文或空字符串"}。
-confirmed必须提供有效E编号和逐字原文，足以支撑关键贡献。引用不超过400字符。不得编造证据。'''
+只输出一个JSON对象，例如：{"status":"confirmed","reason":"简短中文理由",
+"evidence_id":"E1","evidence":"从E1正文片段逐字复制的连续原文"}。
+status只能是confirmed、downgraded或rejected。evidence_id必须是excerpts中实际存在的id字符串；
+无引用时必须写真正的JSON null，不能写字符串"null"，且evidence写空字符串。
+例如：{"status":"downgraded","reason":"片段不足以支持原用途","evidence_id":null,"evidence":""}。
+evidence只能从所选excerpts[id].text逐字复制一个连续子串，不能引用title或screening中的内容。
+保留原文的LaTeX命令、公式、标点和大小写；不得改写、翻译、拼接、不连续摘录或用省略号替换原文。
+confirmed必须提供有效E编号和至少12字符的逐字原文，足以支撑关键贡献。引用不超过400字符。不得编造证据。'''
 PROMPT_DIGEST = _digest(_INSTRUCTIONS)
 
 
@@ -37,7 +42,8 @@ class ReviewValidationError(ValueError):
 
 
 def validate_review(data, excerpts):
-    if not isinstance(data, dict) or data.get('status') not in {'confirmed', 'downgraded', 'rejected'}:
+    if (not isinstance(data, dict) or not isinstance(data.get('status'), str)
+            or data['status'] not in {'confirmed', 'downgraded', 'rejected'}):
         raise ReviewValidationError('invalid_status')
     reason, evidence, ref = data.get('reason'), data.get('evidence'), data.get('evidence_id')
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
@@ -71,6 +77,7 @@ class ReadingReview:
         self.client = client.with_options(timeout=self.timeout, max_retries=self.retries) if hasattr(client, 'with_options') else client
         self.started, self.consecutive = monotonic(), 0
         self.stats = {'complete': True, 'attempted': 0, 'reused': 0, 'failure_codes': {},
+                      'repair_attempted': 0, 'repaired': 0,
                       **{key: 0 for key in ('confirmed', 'downgraded', 'rejected', 'unavailable', 'failed', 'skipped')}}
 
     def _load(self, key, excerpts):
@@ -108,6 +115,10 @@ class ReadingReview:
         logger.warning('Reading review failed ({})', safe)
         return self._finish(paper, {'status': 'failed', 'reason': '正文复核未成功，等待重试。', **safe})
 
+    def _can_request(self):
+        return (self.consecutive < self.breaker
+                and monotonic() - self.started + self.timeout * (self.retries + 1) <= self.budget)
+
     @staticmethod
     def _quote_diagnostics(data, paper):
         # Validation has already established string evidence and a valid excerpt ID.
@@ -127,7 +138,11 @@ class ReadingReview:
         if not paper.evidence_excerpts:
             return self._finish(paper, {'status': 'unavailable', 'reason': '未取得可用正文片段，仅保留摘要筛选依据。'})
         # The bounded excerpt list is exactly the one used for summary provenance.
-        payload = {'title': paper.title, 'screening': paper.relevance_details,
+        screening = {field: paper.relevance_details[field]
+                     for field in ('route', 'contribution', 'target', 'use') if field in paper.relevance_details}
+        if isinstance(paper.relevance_reason, str):
+            screening['reason'] = paper.relevance_reason
+        payload = {'title': paper.title, 'screening': screening,
                    'excerpts': paper.evidence_excerpts}
         extra = {'review_version': REVIEW_VERSION, 'prompt': PROMPT_DIGEST,
                  'evidence_version': EVIDENCE_VERSION, 'payload': payload}
@@ -135,25 +150,46 @@ class ReadingReview:
         if cached := self._load(key, paper.evidence_excerpts):
             self.stats['reused'] += 1
             return self._finish(paper, cached)
-        if (self.consecutive >= self.breaker
-                or monotonic() - self.started + self.timeout * (self.retries + 1) > self.budget):
+        if not self._can_request():
             return self._finish(paper, {'status': 'skipped', 'reason': '正文复核预算或连续失败上限已达到，等待重试。'})
-        data = None
-        try:
-            text = _request_llm(self.client, self.params, [
-                {'role': 'system', 'content': _INSTRUCTIONS},
-                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
-            ])
-            match = re.search(r'\{.*\}', text or '', re.DOTALL)
-            data = json.loads(match.group(0)) if match else None
-            result = validate_review(data, paper.evidence_excerpts)
-        except json.JSONDecodeError:
-            return self._failed(paper, 'invalid_json')
-        except ReviewValidationError as exc:
-            diagnostics = self._quote_diagnostics(data, paper) if exc.code == 'quote_mismatch' else None
-            return self._failed(paper, exc.code, diagnostics=diagnostics)
-        except Exception as exc:
-            return self._failed(paper, 'request_failed', error_type=type(exc).__name__)
+        messages = [
+            {'role': 'system', 'content': _INSTRUCTIONS},
+            {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+        ]
+        for attempt in range(2):
+            try:
+                text = _request_llm(self.client, self.params, messages)
+            except Exception as exc:
+                # Provider failures do not trigger an additional repair request.
+                return self._failed(paper, 'request_failed', error_type=type(exc).__name__)
+            data, diagnostics = None, None
+            try:
+                match = re.search(r'\{.*\}', text, re.DOTALL) if isinstance(text, str) else None
+                if match is None:
+                    raise ReviewValidationError('invalid_json')
+                data = json.loads(match.group(0))
+                result = validate_review(data, paper.evidence_excerpts)
+            except json.JSONDecodeError:
+                code = 'invalid_json'
+            except ReviewValidationError as exc:
+                code = exc.code
+                if code == 'quote_mismatch':
+                    diagnostics = self._quote_diagnostics(data, paper)
+            except Exception as exc:
+                return self._failed(paper, 'request_failed', error_type=type(exc).__name__)
+            else:
+                self.stats['repaired'] += attempt
+                break
+            if attempt == 0 and self._can_request():
+                self.stats['repair_attempted'] += 1
+                # Keep the original system/evidence unchanged; never return a raw draft to the model.
+                messages = [*messages, {'role': 'user', 'content': json.dumps({
+                    'failure_code': code,
+                    'instruction': '上一轮输出未通过本地校验。请遵守相同system规则，仅依据原始excerpts重新输出完整JSON；'
+                                   '引用必须逐字复制所选片段的连续原文，保留LaTeX与标点，不得改写或拼接。',
+                }, ensure_ascii=False)}]
+                continue
+            return self._failed(paper, code, diagnostics=diagnostics)
         self.consecutive = 0
         if self.cache.directory is not None:
             self.cache._write(f'reading-review-{key}.json', {'key': key, 'review': result, 'checksum': _digest(result)})

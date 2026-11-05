@@ -6,6 +6,7 @@ from loguru import logger
 import pytest
 
 from tests.canned_responses import make_sample_paper
+from zotero_arxiv_daily import reading_review as review_module
 from zotero_arxiv_daily.progress import PaperProgress
 from zotero_arxiv_daily.reading_review import ReadingReview, ReviewValidationError, validate_review
 
@@ -24,6 +25,21 @@ def client(reply, calls):
         if isinstance(reply, Exception):
             raise reply
         return SimpleNamespace(output_text=json.dumps(reply))
+    return SimpleNamespace(responses=SimpleNamespace(create=create))
+
+
+def sequence_client(replies, calls, on_request=None):
+    replies = iter(replies)
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if on_request is not None:
+            on_request()
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return SimpleNamespace(output_text=reply if isinstance(reply, str) else json.dumps(reply))
+
     return SimpleNamespace(responses=SimpleNamespace(create=create))
 
 
@@ -48,6 +64,8 @@ def test_review_reuses_cache_but_changed_body_or_use_requires_new_request(tmp_pa
 
 @pytest.mark.parametrize('change,code', [
     ({'status': 'unknown'}, 'invalid_status'),
+    ({'status': []}, 'invalid_status'),
+    ({'status': {}}, 'invalid_status'),
     ({'reason': ''}, 'invalid_reason'),
     ({'reason': 'x' * 501}, 'invalid_reason'),
     ({'evidence': None}, 'invalid_evidence'),
@@ -115,6 +133,7 @@ def test_nonobject_cache_is_ignored_and_repaired(tmp_path):
     (json.dumps({**confirmation(), 'evidence': 'PRIVATE_RAW_RESPONSE'}), 'quote_mismatch'),
     (RuntimeError('PRIVATE_PROVIDER_CREDENTIAL'), 'request_failed'),
     (ValueError('PRIVATE_PROVIDER_CREDENTIAL'), 'request_failed'),
+    (json.JSONDecodeError('PRIVATE_PROVIDER_CREDENTIAL', 'PRIVATE_RAW_RESPONSE', 0), 'request_failed'),
 ])
 def test_failure_diagnostics_are_safe_fail_closed_and_not_cached(tmp_path, response, code):
     calls, logs = [], StringIO()
@@ -132,7 +151,9 @@ def test_failure_diagnostics_are_safe_fail_closed_and_not_cached(tmp_path, respo
         result = review.review(paper())
     finally:
         logger.remove(sink)
-    assert len(calls) == 1  # Diagnostics do not add repair requests or retries.
+    assert len(calls) == (1 if isinstance(response, Exception) else 2)
+    assert review.stats['repair_attempted'] == (0 if isinstance(response, Exception) else 1)
+    assert review.stats['repaired'] == 0
     assert result['status'] == 'failed' and result['failure_code'] == code
     assert not review.stats['complete'] and review.stats['failed'] == 1
     assert review.stats['failure_codes'] == {code: 1}
@@ -172,3 +193,101 @@ def test_quote_mismatch_only_records_source_match_booleans(tmp_path, screening, 
     assert all(isinstance(result[key], bool) for key in ('matches_screening_evidence', 'matches_other_excerpt'))
     assert quote not in json.dumps(result) + json.dumps(review.stats) + logs.getvalue()
     assert not review.stats['complete'] and not list(tmp_path.rglob('reading-review-*.json'))
+
+
+@pytest.mark.parametrize('first_response,code', [
+    ('PRIVATE_RAW_DRAFT without JSON', 'invalid_json'),
+    ('{"status": "PRIVATE_RAW_DRAFT", "evidence_id": ???}', 'invalid_json'),
+    ({**confirmation(), 'status': 'PRIVATE_RAW_DRAFT'}, 'invalid_status'),
+    ({**confirmation(), 'evidence': 'PRIVATE_RAW_DRAFT'}, 'quote_mismatch'),
+])
+def test_one_bounded_repair_uses_original_evidence_and_caches_only_validated_result(tmp_path, first_response, code):
+    calls, logs, cache = [], StringIO(), PaperProgress(tmp_path, 'library')
+    review = ReadingReview(sequence_client([first_response, confirmation()], calls), PARAMS, {}, cache)
+    sink = logger.add(logs, format='{message}')
+    try:
+        result = review.review(paper())
+    finally:
+        logger.remove(sink)
+    assert result['status'] == 'confirmed' and review.stats['complete']
+    assert len(calls) == 2 and review.stats['attempted'] == 1
+    assert review.stats['repair_attempted'] == review.stats['repaired'] == 1
+    assert review.stats['failed'] == 0 and review.stats['failure_codes'] == {}
+    original, repair = calls[0]['input'], calls[1]['input']
+    assert len(original) == 2 and len(repair) == 3
+    assert repair[:2] == original  # The exact same system and evidence, without a raw assistant draft.
+    assert json.loads(repair[-1]['content'])['failure_code'] == code
+    assert all(message['role'] != 'assistant' for message in repair)
+    [path] = list(tmp_path.rglob('reading-review-*.json'))
+    saved = json.loads(path.read_text())
+    assert saved['review'] == confirmation()
+    safe_output = json.dumps(result) + json.dumps(review.stats) + json.dumps(calls) + path.read_text() + logs.getvalue()
+    assert 'PRIVATE_RAW_DRAFT' not in safe_output
+    resumed = ReadingReview(sequence_client([], calls), PARAMS, {}, cache)
+    assert resumed.review(paper())['status'] == 'confirmed'
+    assert resumed.stats['reused'] == 1 and resumed.stats['repair_attempted'] == 0 and len(calls) == 2
+
+
+def test_repair_is_not_started_when_remaining_budget_cannot_cover_sdk_attempts(tmp_path, monkeypatch):
+    clock, calls = {'now': 0}, []
+    monkeypatch.setattr(review_module, 'monotonic', lambda: clock['now'])
+
+    def consume_time():
+        clock['now'] = 3
+
+    review = ReadingReview(sequence_client([{**confirmation(), 'evidence': 'wrong'}, confirmation()], calls,
+                                          consume_time), PARAMS,
+                           {'request_timeout': 2, 'max_retries': 1, 'time_budget_seconds': 6},
+                           PaperProgress(tmp_path, 'library'))
+    result = review.review(paper())
+    assert result['failure_code'] == 'quote_mismatch' and not review.stats['complete']
+    assert len(calls) == 1 and review.stats['repair_attempted'] == review.stats['repaired'] == 0
+    assert not list(tmp_path.rglob('reading-review-*.json'))
+
+
+def test_provider_failure_during_repair_never_starts_another_repair(tmp_path):
+    calls = []
+    fake = sequence_client([{**confirmation(), 'evidence': 'wrong'}, RuntimeError('PRIVATE_CREDENTIAL')], calls)
+    review = ReadingReview(fake, PARAMS, {}, PaperProgress(tmp_path, 'library'))
+    result = review.review(paper())
+    assert len(calls) == 2 and result['failure_code'] == 'request_failed'
+    assert result['error_type'] == 'RuntimeError'
+    assert review.stats['repair_attempted'] == 1 and review.stats['repaired'] == 0
+    assert not review.stats['complete'] and not list(tmp_path.rglob('reading-review-*.json'))
+    assert 'PRIVATE_CREDENTIAL' not in json.dumps(result) + json.dumps(review.stats)
+
+
+def test_failed_repair_preserves_consecutive_failure_breaker(tmp_path):
+    calls = []
+    fake = sequence_client([{**confirmation(), 'evidence': 'wrong'}] * 2, calls)
+    review = ReadingReview(fake, PARAMS, {'max_consecutive_failures': 1}, PaperProgress(tmp_path, 'library'))
+    assert review.review(paper())['failure_code'] == 'quote_mismatch'
+    assert review.review(paper())['status'] == 'skipped'
+    assert len(calls) == 2 and review.stats['repair_attempted'] == 1
+    assert not review.stats['complete'] and not list(tmp_path.rglob('reading-review-*.json'))
+
+
+def test_screening_payload_excludes_abstract_evidence_and_unrelated_fields(tmp_path):
+    candidate, calls = paper(), []
+    candidate.relevance_details.update(evidence='PRIVATE_ABSTRACT_QUOTE', unrelated='PRIVATE_UNUSED_FIELD')
+    candidate.relevance_reason = '比较色散测量方法'
+    review = ReadingReview(client(confirmation(), calls), PARAMS, {}, PaperProgress(tmp_path, 'library'))
+    assert review.review(candidate)['status'] == 'confirmed'
+    payload = json.loads(calls[0]['input'][1]['content'])
+    assert payload['screening'] == {'route': 'current', 'use': '比较动量依赖',
+                                    'contribution': '测量色散', 'reason': '比较色散测量方法'}
+    assert 'PRIVATE_ABSTRACT_QUOTE' not in json.dumps(calls)
+    assert 'PRIVATE_UNUSED_FIELD' not in json.dumps(calls)
+    assert candidate.relevance_details['evidence'] == 'PRIVATE_ABSTRACT_QUOTE'
+
+
+@pytest.mark.parametrize('quote', [
+    'We derive σ_E, with a continuous spectrum.',
+    r'We derive $\sigma_E$ with a continuous spectrum.',
+    r'We derive $\sigma_E$, ... spectrum.',
+])
+def test_repair_does_not_relax_latex_punctuation_or_contiguous_quote_validation(quote):
+    body = r'We derive $\sigma_E$, with a continuous spectrum.'
+    with pytest.raises(ReviewValidationError) as caught:
+        validate_review({**confirmation(), 'evidence': quote}, [{'id': 'E1', 'text': body}])
+    assert caught.value.code == 'quote_mismatch'
