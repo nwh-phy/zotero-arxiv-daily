@@ -38,16 +38,9 @@ jobs:
         run: |
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'run_id must be numeric'; exit 1; }
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name weekly-brief-report --dir verification/replay-source
+          test -f verification/replay-source/evaluation.json || { echo 'This run has no legacy evaluation data; current public artifacts are aggregate-only.'; exit 1; }
       - name: Re-evaluate abstracts with the checked-out research profile
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
         run: uv run --frozen scripts/replay_reading_value.py verification/replay-source/evaluation.json --live --output verification/reading-value-replay
-      - name: Upload provisional selection comparison
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reading-value-comparison
-          path: verification/reading-value-replay/
-          if-no-files-found: ignore
-          retention-days: 14

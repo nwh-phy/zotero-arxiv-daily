@@ -94,11 +94,14 @@ jobs:
       - name: Brief run summary
         if: always()
         run: uv run --frozen scripts/report_brief.py >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload brief verification artifacts
+      - name: Build public aggregate counts
+        if: always()
+        run: python scripts/public_brief_counts.py
+      - name: Upload aggregate brief counts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: weekly-brief-report
-          path: verification/brief/
+          path: verification/public-brief-counts.json
           if-no-files-found: ignore
           retention-days: 14

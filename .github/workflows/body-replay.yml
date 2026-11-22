@@ -38,7 +38,7 @@ jobs:
         run: |
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'run_id must be numeric'; exit 1; }
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name weekly-brief-report --dir verification/body-replay-source
-          test -f verification/body-replay-source/evaluation.json
+          test -f verification/body-replay-source/evaluation.json || { echo 'This run has no legacy evaluation data; current public artifacts are aggregate-only.'; exit 1; }
           test -f verification/body-replay-source/report.json
       - name: Apply checked-out recommendations while retaining configured provider model
         env:
@@ -51,16 +51,3 @@ jobs:
         run: >-
           uv run --frozen scripts/replay_body_review.py verification/body-replay-source/evaluation.json
           --report verification/body-replay-source/report.json --live --output verification/body-replay
-      - name: Upload isolated body-review diagnostics and numbered public excerpts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: archived-body-review-preview
-          path: |
-            verification/body-replay/report.json
-            verification/body-replay/review-evidence.json
-            verification/body-replay/brief.html
-            verification/body-replay/brief.txt
-            verification/body-replay/README.txt
-          if-no-files-found: ignore
-          retention-days: 14

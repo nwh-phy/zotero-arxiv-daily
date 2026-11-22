@@ -49,14 +49,6 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
         run: uv run --frozen scripts/probe_llm.py --output verification/llm-probe.json
-      - name: Upload LLM probe evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: llm-probe
-          path: verification/llm-probe.json
-          if-no-files-found: ignore
-          retention-days: 14
   replay:
     if: ${{ !inputs.llm_probe && inputs.replay_run_id != '' && inputs.body_replay_run_id == '' }}
     uses: ./.github/workflows/replay.yml
@@ -114,11 +106,3 @@ jobs:
           key: hf-jina-v5-nano-${{ runner.os }}-${{ hashFiles('uv.lock') }}
       - name: Live API, embedding and Chinese summary verification
         run: uv run --frozen scripts/verify_deployment.py ${{ inputs.summary_only && '--summary-only' || '' }} ${{ inputs.send_test && '--send-test' || '' }}
-      - name: Upload verification evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: verification-report
-          path: verification/
-          if-no-files-found: ignore
-          retention-days: 14
